@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""
+pre-commit — commit'e sir karismasini engeller.
+
+Kontrol ettikleri:
+  1. .env veya benzeri kimlik dosyalari staged mi
+  2. Staged icerikte sifre / api_key / token deseni var mi
+  3. Cok buyuk dosya eklenmis mi (GitHub 100MB'da reddeder)
+
+Atlatmak icin:  git commit --no-verify    (sadece yanlis alarm oldugunu
+                                            dogruladiysaniz)
+"""
+
+import re
+import subprocess
+import sys
+
+MAX_MB = 45
+
+# Asla commit edilmemesi gereken dosyalar
+YASAK_DOSYALAR = re.compile(r"(^|/)\.env$|(^|/)\.env\.(local|prod|production)$|"
+                            r"\.pem$|\.p12$|(^|/)id_rsa$|(^|/)id_ed25519$")
+
+# Staged icerikte aranan desenler.  (ad, desen, ornek-yanlis-alarm-filtresi)
+DESENLER = [
+    ("stream sifresi",
+     re.compile(r'STREAM_PASSWORD\s*["\']?\s*[,=]\s*["\'][^"\']{4,}["\']')),
+    ("stream kullanici",
+     re.compile(r'STREAM_USERNAME\s*["\']?\s*[,=]\s*["\'][^"\']{3,}["\']')),
+    ("api key / token",
+     re.compile(r'(?i)(api_?key|secret|token|passwd|password)\s*[:=]\s*'
+                r'["\'][A-Za-z0-9_\-+/=]{16,}["\']')),
+    ("AWS anahtari",
+     re.compile(r'AKIA[0-9A-Z]{16}')),
+    ("ozel anahtar blogu",
+     re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----')),
+]
+
+# Sablon/ornek dosyalarda bos deger normaldir, onlari atla
+MUAF = re.compile(r"\.env\.example$|\.githooks/|(^|/)KURULUM\.md$|(^|/)README\.md$")
+
+
+def calistir(*args):
+    return subprocess.run(args, capture_output=True, text=True).stdout
+
+
+def main():
+    staged = [f for f in calistir("git", "diff", "--cached", "--name-only",
+                                  "--diff-filter=ACM").splitlines() if f]
+    if not staged:
+        return 0
+
+    sorunlar = []
+
+    # 1) yasak dosyalar
+    for f in staged:
+        if YASAK_DOSYALAR.search(f):
+            sorunlar.append((f, "kimlik dosyasi commit edilemez"))
+
+    # 2) buyuk dosyalar
+    for f in staged:
+        boyut = calistir("git", "cat-file", "-s",
+                         calistir("git", "rev-parse", f":{f}").strip() or "HEAD")
+        try:
+            mb = int(boyut.strip()) / 1024 / 1024
+            if mb > MAX_MB:
+                sorunlar.append((f, f"cok buyuk ({mb:.0f} MB > {MAX_MB} MB)"))
+        except ValueError:
+            pass
+
+    # 3) icerik taramasi
+    for f in staged:
+        if MUAF.search(f):
+            continue
+        icerik = calistir("git", "show", f":{f}")
+        if not icerik:
+            continue
+        for ad, desen in DESENLER:
+            m = desen.search(icerik)
+            if m:
+                satir = icerik[:m.start()].count("\n") + 1
+                parca = m.group(0)[:50]
+                sorunlar.append((f"{f}:{satir}", f"{ad} -> {parca}…"))
+
+    if not sorunlar:
+        return 0
+
+    print("\n  COMMIT DURDURULDU — sir sizmasi riski\n", file=sys.stderr)
+    for yer, sebep in sorunlar:
+        print(f"    {yer}", file=sys.stderr)
+        print(f"      {sebep}\n", file=sys.stderr)
+    print("  Kimlik bilgileri .env dosyasinda tutulmali (o dosya .gitignore'da).", file=sys.stderr)
+    print("  Yanlis alarm oldugundan eminseniz:  git commit --no-verify\n", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
