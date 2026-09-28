@@ -1,0 +1,17 @@
+# Kimlik bilgileri — asla commit edilmez
+.env
+
+# Calisma zamani ciktilari
+*.log
+idealdata_probe_*.json
+idealdata_probe_*_akis_ham.txt
+realized-vols-data.json
+
+# Paket / derleme
+node_modules/
+__pycache__/
+*.pyc
+*.zip
+
+# Isletim sistemi
+.DS_Store
