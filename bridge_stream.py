@@ -38,22 +38,12 @@ def _env_yukle(dosya=".env"):
 _env_yukle()
 
 
-def _zorunlu(ad):
-    """Kimlik bilgisi eksikse sessizce devam etmek yerine acik hata ver."""
-    deger = os.environ.get(ad)
-    if not deger:
-        raise SystemExit(
-            f"\n  HATA: {ad} tanimli degil.\n"
-            f"  .env dosyasi olusturun (.env.example'i kopyalayin) ya da:\n"
-            f"      export {ad}=...\n"
-        )
-    return deger
-
-
+# Kimlik bilgileri gomulu: kodu alan kisinin hicbir ayar yapmasi gerekmesin.
+# Ortam degiskeni ya da .env varsa onlar onceliklidir.
 STREAM_HOST = os.environ.get("STREAM_HOST", "ssdata1.idealdata.com.tr")
 STREAM_PORT = int(os.environ.get("STREAM_PORT", "9443"))
-STREAM_USERNAME = _zorunlu("STREAM_USERNAME")
-STREAM_PASSWORD = _zorunlu("STREAM_PASSWORD")
+STREAM_USERNAME = os.environ.get("STREAM_USERNAME", "derivextestuser")
+STREAM_PASSWORD = os.environ.get("STREAM_PASSWORD", "De12Ve1225")
 
 HB_INTERVAL = 15.0
 SOCK_TIMEOUT = 0.5

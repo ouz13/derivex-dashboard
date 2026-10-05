@@ -70,11 +70,15 @@ _env_yukle()
 
 STREAM_HOST = os.environ.get("STREAM_HOST", "ssdata1.idealdata.com.tr")
 STREAM_PORT = int(os.environ.get("STREAM_PORT", "9443"))
-STREAM_USERNAME = os.environ.get("STREAM_USERNAME", "")
-STREAM_PASSWORD = os.environ.get("STREAM_PASSWORD", "")
+STREAM_USERNAME = os.environ.get("STREAM_USERNAME", "derivextestuser")
+STREAM_PASSWORD = os.environ.get("STREAM_PASSWORD", "De12Ve1225")
 
 REST_BASE = "https://servisapi.idealdata.com.tr/api/Chart/Chart1"
-REST_API_KEY = os.environ.get("IDEALDATA_API_KEY", "")
+REST_API_KEY = os.environ.get(
+    "IDEALDATA_API_KEY",
+    "b606d2c2-379d-46b5-8561-139039f0bd74"
+    "+5vkySYZIcPTEgjvWI3wUZJcPzTsEJpYr2ncn2rCNycw4PWDRyhir8e69XPe8OM9ieyaB2DnJvSLuCZqhWww",
+)
 
 HB_INTERVAL = 15.0          # heartbeat araligi (bridge_stream.py ile ayni)
 SOCK_TIMEOUT = 0.5
@@ -502,12 +506,6 @@ def main():
     register_secrets()
     user, pwd, api_key = STREAM_USERNAME, STREAM_PASSWORD, REST_API_KEY
 
-    eksik = [ad for ad, d in (("STREAM_USERNAME", user), ("STREAM_PASSWORD", pwd),
-                              ("IDEALDATA_API_KEY", api_key)) if not d]
-    if eksik:
-        print(f"\n  HATA: kimlik bilgisi eksik -> {', '.join(eksik)}")
-        print("  .env.example dosyasini .env olarak kopyalayip doldurun.\n")
-        sys.exit(1)
 
     print()
     print("  IdealData Probe — Derivex veri kesfi")

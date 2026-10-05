@@ -45,7 +45,7 @@ const realizedVolTickers = [
 ];
 
 const realizedVolWindows = [15, 30, 60, 90, 180];
-const realizedVolApiKey = process.env.IDEALDATA_API_KEY || '';
+const realizedVolApiKey = process.env.IDEALDATA_API_KEY || 'b606d2c2-379d-46b5-8561-139039f0bd74+5vkySYZIcPTEgjvWI3wUZJcPzTsEJpYr2ncn2rCNycw4PWDRyhir8e69XPe8OM9ieyaB2DnJvSLuCZqhWww';
 const realizedVolCache = { generatedAtMs: 0, payload: null, inFlight: null };
 const realizedVolCacheTtlMs = 5 * 60 * 1000;
 

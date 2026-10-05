@@ -7,9 +7,10 @@ ekranda toplayan finansal türev platformu. IdealData canlı akışından beslen
 
 ```bash
 pip3 install requests
-cp .env.example .env        # kimlik bilgilerini doldurun
 python3 start.py
 ```
+
+Ayar gerekmez — IdealData bağlantı bilgileri kodda gömülüdür.
 
 Tarayıcıda: **http://127.0.0.1:5173** — durdurmak için `Ctrl+C`.
 
@@ -62,8 +63,9 @@ Sembol biçimleri: spot `THYAO`, vadeli `F_THYAO1026`, opsiyon
 
 ## Geliştirme
 
-Kimlik bilgileri **koda yazılmaz**, `.env` dosyasından okunur (`.gitignore`
-içindedir). Gerekli değişkenler için `.env.example` dosyasına bakın.
+IdealData test hesabının bilgileri kodda gömülüdür; kurulum sırasında hiçbir
+şey girilmesi gerekmez. Başka bir hesapla çalışmak isterseniz ortam değişkeni
+ya da `.env` dosyası bunları ezer (`.env.example` şablonuna bakın).
 
 Repoyu klonladıktan sonra sır koruma kancasını etkinleştirin:
 
@@ -71,8 +73,9 @@ Repoyu klonladıktan sonra sır koruma kancasını etkinleştirin:
 git config core.hooksPath .githooks
 ```
 
-Bu kanca `.env`, koda gömülü şifre/anahtar ve aşırı büyük dosyaları commit
-öncesinde yakalayıp durdurur.
+Bu kanca `.env` dosyalarını, **yeni** şifre/anahtarları ve aşırı büyük
+dosyaları commit öncesinde yakalar. Mevcut IdealData bilgileri bilinçli bir
+karar olduğu için muaf tutulmuştur.
 
 ## Bilinen davranışlar
 

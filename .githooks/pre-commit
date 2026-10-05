@@ -45,6 +45,20 @@ DESENLER = [
 # Sablon/ornek dosyalarda bos deger normaldir, onlari atla
 MUAF = re.compile(r"\.env\.example$|\.githooks/|(^|/)KURULUM\.md$|(^|/)README\.md$")
 
+# Bilerek repoya konmus IdealData test hesabi bilgileri.
+# Proje sahibinin karari: kodu alan kisi hicbir ayar yapmasin diye gomulu.
+# Bu listedekiler disinda KALAN her sir yine engellenir — yeni bir anahtar
+# ya da baska bir servisin sifresi eklenirse kanca durdurur.
+KASITLI = (
+    "derivextestuser",
+    "De12Ve1225",
+    "b606d2c2-379d-46b5-8561-139039f0bd74",
+)
+
+
+def kasitli_mi(parca):
+    return any(k in parca for k in KASITLI)
+
 
 def calistir(*args):
     return subprocess.run(args, capture_output=True, text=True).stdout
@@ -82,11 +96,13 @@ def main():
         if not icerik:
             continue
         for ad, desen in DESENLER:
-            m = desen.search(icerik)
-            if m:
+            for m in desen.finditer(icerik):
+                if kasitli_mi(m.group(0)):
+                    continue
                 satir = icerik[:m.start()].count("\n") + 1
                 parca = m.group(0)[:50]
                 sorunlar.append((f"{f}:{satir}", f"{ad} -> {parca}…"))
+                break
 
     if not sorunlar:
         return 0

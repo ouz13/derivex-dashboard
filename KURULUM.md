@@ -4,7 +4,7 @@ Verinin aktığı (IdealData'da IP'si tanımlı) makinede çalıştırmak için.
 
 ---
 
-# ÖZET — 4 adım
+# ÖZET — 3 adım
 
 ```bash
 # 1. Node.js 14+ ve Python 3.8+ kurulu olsun, sonra:
@@ -13,12 +13,7 @@ pip3 install requests
 # 2. Bu klasöre gir
 cd derivex-dashboard
 
-# 3. Kimlik bilgilerini gir (bir kez)
-cp .env.example .env
-#    .env dosyasini acip doldurun:
-#      STREAM_USERNAME, STREAM_PASSWORD, IDEALDATA_API_KEY
-
-# 4. Başlat
+# 3. Başlat
 python3 start.py
 ```
 
@@ -210,10 +205,11 @@ IdealData REST ─────────────────────�
 
 ---
 
-## 7. Güvenlik notu
+## 7. Kimlik bilgileri
 
-Kimlik bilgileri kodda tutulmaz; `.env` dosyasından okunur. `.env` dosyası
-`.gitignore` içindedir, repoya girmez.
+IdealData test hesabının bilgileri kodda gömülüdür — kurulumda hiçbir şey
+girmeniz gerekmez. Başka bir hesapla çalışmak isterseniz ortam değişkeni ya da
+`.env` dosyası bunları ezer:
 
 | Değişken | Ne |
 |---|---|
@@ -221,13 +217,10 @@ Kimlik bilgileri kodda tutulmaz; `.env` dosyasından okunur. `.env` dosyası
 | `STREAM_PASSWORD` | IdealData stream şifresi |
 | `IDEALDATA_API_KEY` | REST (`servisapi`) anahtarı — Realized Vols için |
 
-`.env` yoksa ya da eksikse hem köprü hem probe açık hata verip durur; sessizce
-yanlış davranmaz.
-
-Ortam değişkeni `.env`'den önceliklidir, yani CI veya systemd altında
-`.env` olmadan da çalışır:
-
 ```bash
 export STREAM_USERNAME=... STREAM_PASSWORD=... IDEALDATA_API_KEY=...
 python3 start.py
 ```
+
+Repo private'tır. Dışarıya açılacak olursa bu bilgilerin önce yenilenmesi
+gerekir.
