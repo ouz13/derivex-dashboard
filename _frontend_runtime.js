@@ -585,6 +585,33 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
       return Number(v).toFixed(dp);
     }
 
+    // Cox-Ross-Rubinstein binom agaci.
+    // Black-Scholes'un veremedigi tek sey erken kullanim hakkidir; agac her
+    // dugumde "simdi kullan" ile "bekle" arasinda secim yapabildigi icin
+    // Amerikan tipi opsiyonlari da fiyatlar.
+    function _binomPrice(isCall, S, K, r, sigma, T, steps, american) {
+      steps = steps || 200;
+      if (!(S > 0) || !(K > 0) || !(sigma > 0) || !(T > 0)) return null;
+      const dt = T / steps;
+      const u = Math.exp(sigma * Math.sqrt(dt));
+      const d = 1 / u;
+      const disk = Math.exp(-r * dt);
+      const p = (Math.exp(r * dt) - d) / (u - d);
+      if (!(p > 0 && p < 1)) return null;   // risksiz olasilik aralik disi
+      const ic = (s) => (isCall ? Math.max(s - K, 0) : Math.max(K - s, 0));
+
+      const v = new Array(steps + 1);
+      for (let i = 0; i <= steps; i++) v[i] = ic(S * Math.pow(u, steps - i) * Math.pow(d, i));
+      for (let adim = steps - 1; adim >= 0; adim--) {
+        for (let i = 0; i <= adim; i++) {
+          let devam = disk * (p * v[i] + (1 - p) * v[i + 1]);
+          if (american) devam = Math.max(devam, ic(S * Math.pow(u, adim - i) * Math.pow(d, i)));
+          v[i] = devam;
+        }
+      }
+      return v[0];
+    }
+
     function _bsCore(isCall, S, K, r, sigma, T) {
       if (!(S > 0) || !(K > 0) || !(sigma > 0) || !(T > 0)) return null;
       const sqrtT = Math.sqrt(T);
@@ -604,7 +631,10 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         : (-S * Math.exp(-0.5 * d1 * d1) * sigma / (2 * sqrtT * Math.sqrt(2 * Math.PI)) + r * K * df * Nmd2);
       const thetaDay = thetaYear / 365;
       const rho = (isCall ? (K * T * df * Nd2) : (-K * T * df * Nmd2)) / 100;
-      return { d1, d2, price, delta, gamma, vega, thetaDay, rho };
+      // Girdiler de dondurulur: cagiran taraf ayni opsiyonu baska bir
+      // yontemle (binom agaci) fiyatlayabilsin diye.
+      return { d1, d2, price, delta, gamma, vega, thetaDay, rho,
+               isCall, S, K, r, sigma, T };
     }
 
     function initOptionPricer() {
@@ -634,6 +664,10 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
       const outVega = byId('prcVega');
       const outTheta = byId('prcTheta');
       const outRho = byId('prcRho');
+      const outBinEu = byId('prcBinEu');
+      const outBinAm = byId('prcBinAm');
+      const outBinDiff = byId('prcBinDiff');
+      const outEarlyEx = byId('prcEarlyEx');
       const brokerEl = byId('prcBroker');
       const qtyEl = byId('prcQty');
       const sideEl = byId('prcSide');
@@ -829,6 +863,7 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         if (!core) {
           outD1.value = '-'; outD2.value = '-'; outPrice.value = '-';
           outDelta.value = '-'; outGamma.value = '-'; outVega.value = '-'; outTheta.value = '-'; outRho.value = '-';
+          if (outBinEu) { outBinEu.value = '-'; outBinAm.value = '-'; outBinDiff.value = '-'; outEarlyEx.value = '-'; }
           return;
         }
         outD1.value = _fmtOut(core.d1, 4);
@@ -839,6 +874,23 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         outVega.value = _fmtOut(core.vega, 4);
         outTheta.value = _fmtOut(core.thetaDay, 6);
         outRho.value = _fmtOut(core.rho, 4);
+
+        // Yontemler arasi tutarlilik: ayni opsiyonu binom agaciyla da fiyatla.
+        // Avrupa agaci BS'ye yakinsamali; sapma buyukse girdi ya da model
+        // tarafinda bir sorun var demektir.
+        if (outBinEu) {
+          const bEu = _binomPrice(core.isCall, core.S, core.K, core.r, core.sigma, core.T, 300, false);
+          const bAm = _binomPrice(core.isCall, core.S, core.K, core.r, core.sigma, core.T, 300, true);
+          outBinEu.value = _fmtOut(bEu, 4);
+          outBinAm.value = _fmtOut(bAm, 4);
+          if (bEu !== null && core.price > 1e-12) {
+            const sapma = (bEu - core.price) / core.price * 100;
+            outBinDiff.value = (sapma >= 0 ? '+' : '') + sapma.toFixed(3) + '%';
+          } else {
+            outBinDiff.value = '-';
+          }
+          outEarlyEx.value = (bAm !== null && bEu !== null) ? _fmtOut(bAm - bEu, 4) : '-';
+        }
       }
 
       [typeEl, spotEl, strikeEl, dateEl, rateEl, volEl, divEl].forEach((el) => {
@@ -3365,6 +3417,17 @@ function toolsContent(toolsTab) {
             <div><div class="field-label">Vega (per 1% vol)</div><input class="field-output field-readonly" id="prcVega" readonly /></div>
             <div><div class="field-label">Theta (per day)</div><input class="field-output field-readonly" id="prcTheta" readonly /></div>
             <div><div class="field-label">Rho</div><input class="field-output field-readonly" id="prcRho" readonly /></div>
+          </div>
+          <div style="margin-top:14px;border-top:1px solid #e2e8f0;padding-top:12px;">
+            <div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">
+              Yöntem Karşılaştırması (Binom Ağacı, 300 adım)
+            </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;">
+              <div><div class="field-label">Binom (Avrupa)</div><input class="field-output field-readonly" id="prcBinEu" readonly /></div>
+              <div><div class="field-label">Binom (Amerikan)</div><input class="field-output field-readonly" id="prcBinAm" readonly /></div>
+              <div><div class="field-label" title="Binom Avrupa ile Black-Scholes arasındaki sapma. Büyük bir fark model ya da parametre sorununa işaret eder.">BS'den Sapma</div><input class="field-output field-readonly" id="prcBinDiff" readonly /></div>
+              <div><div class="field-label" title="Amerikan ile Avrupa arasındaki fark: erken kullanım hakkının değeri.">Erken Kullanım Primi</div><input class="field-output field-readonly" id="prcEarlyEx" readonly /></div>
+            </div>
           </div>
         </div>
       </div>

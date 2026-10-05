@@ -50,7 +50,7 @@ Ayrıntılı kurulum, sorun giderme ve elle çalıştırma için → [KURULUM.md
 | **Realized Vols** | 15/30/60/90/180 günlük gerçekleşmiş volatilite ve GARCH tahmini |
 | **Volatility Curve** | Heston kalibrasyonu, piyasa IV'si ile model karşılaştırması |
 | **Risk** | Monte Carlo VaR / CVaR, portföy P&L dağılımı |
-| **Pricer** | Temettü düzeltmeli opsiyon fiyatlayıcı |
+| **Pricer** | Temettü düzeltmeli opsiyon fiyatlayıcı, Greeks ve yöntem karşılaştırması |
 | **Discount Rate / Dividends** | İskonto eğrisi ve temettü girişi |
 
 ## Mimari
@@ -101,6 +101,20 @@ git config core.hooksPath .githooks
 Bu kanca `.env` dosyalarını, **yeni** şifre/anahtarları ve aşırı büyük
 dosyaları commit öncesinde yakalar. Mevcut IdealData bilgileri bilinçli bir
 karar olduğu için muaf tutulmuştur.
+
+## Fiyatlama yöntemleri
+
+| Yöntem | Kullanım |
+|---|---|
+| Black-Scholes | Avrupa tipi standart opsiyonlar, zımni volatilite, Greeks |
+| Binom ağacı (CRR) | Erken kullanım hakkı taşıyan (Amerikan tipi) opsiyonlar |
+| Monte Carlo | Portföy düzeyinde VaR / CVaR |
+
+Pricer sekmesi aynı opsiyonu her iki analitik yöntemle fiyatlayıp sapmayı
+gösterir. Binom ağacının Avrupa sürümü Black-Scholes'a yakınsamalıdır;
+belirgin bir sapma model ya da parametre tarafında sorun olduğuna işaret
+eder. Amerikan ile Avrupa arasındaki fark erken kullanım hakkının değeridir
+(temettüsüz call'da sıfır, faiz yüksekken derin ITM put'ta belirgin).
 
 ## Testler
 

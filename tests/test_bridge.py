@@ -178,6 +178,68 @@ class TestImpliedVol(unittest.TestCase):
 # Vadeli getiri
 # ---------------------------------------------------------------------------
 
+class TestBinomial(unittest.TestCase):
+    """Binom agaci ve iki yontem arasindaki tutarlilik."""
+
+    S, K, R, T, V = 100.0, 100.0, 0.30, 0.5, 0.40
+
+    def test_avrupa_black_scholes_e_yakinsar(self):
+        """Adim sayisi arttikca binom fiyati BS'ye yaklasmali."""
+        bs = B._bs_price("C", self.S, self.K, self.R, self.T, self.V)
+        onceki_hata = None
+        for adim in (10, 50, 200, 800):
+            b = B._binomial_price("C", self.S, self.K, self.R, self.T, self.V, adim)
+            hata = abs(b - bs)
+            if onceki_hata is not None:
+                self.assertLess(hata, onceki_hata * 1.5,
+                                f"adim={adim} hatayi azaltmadi")
+            onceki_hata = hata
+        self.assertLess(onceki_hata, 0.02, "800 adimda BS'ye yeterince yakinsamadi")
+
+    def test_avrupa_put_da_yakinsar(self):
+        bs = B._bs_price("P", 95.0, 100.0, 0.30, 0.75, 0.35)
+        b = B._binomial_price("P", 95.0, 100.0, 0.30, 0.75, 0.35, 800)
+        self.assertAlmostEqual(b, bs, delta=0.02)
+
+    def test_temettusuz_amerikan_call_avrupa_ile_ayni(self):
+        """Temettu yoksa Amerikan call'u erken kullanmak optimal degildir."""
+        avr = B._binomial_price("C", self.S, self.K, self.R, self.T, self.V, 300, american=False)
+        ame = B._binomial_price("C", self.S, self.K, self.R, self.T, self.V, 300, american=True)
+        self.assertAlmostEqual(ame, avr, places=8)
+
+    def test_amerikan_put_avrupadan_ucuz_olamaz(self):
+        for K in (80.0, 100.0, 130.0):
+            avr = B._binomial_price("P", 100.0, K, 0.30, 1.0, 0.35, 300, american=False)
+            ame = B._binomial_price("P", 100.0, K, 0.30, 1.0, 0.35, 300, american=True)
+            self.assertGreaterEqual(ame, avr - 1e-9,
+                                    f"K={K}: Amerikan put Avrupadan ucuz cikti")
+
+    def test_derin_icsel_amerikan_put_erken_kullanim_primi_tasir(self):
+        """Faiz yuksekken derin ITM put'u erken kullanmak degerlidir."""
+        avr = B._binomial_price("P", 50.0, 100.0, 0.30, 1.0, 0.25, 300, american=False)
+        ame = B._binomial_price("P", 50.0, 100.0, 0.30, 1.0, 0.25, 300, american=True)
+        self.assertGreater(ame - avr, 0.5, "erken kullanim primi beklenenden kucuk")
+
+    def test_amerikan_put_icsel_degerin_altina_inmez(self):
+        ame = B._binomial_price("P", 50.0, 100.0, 0.30, 1.0, 0.25, 300, american=True)
+        self.assertGreaterEqual(ame, 100.0 - 50.0 - 1e-9)
+
+    def test_karsilastirma_ciktisi(self):
+        k = B._fiyat_karsilastir("C", self.S, self.K, self.R, self.T, self.V, 400)
+        self.assertIsNotNone(k)
+        for alan in ("black_scholes", "binom_avrupa", "binom_amerikan",
+                     "fark", "fark_yuzde", "erken_kullanim_primi"):
+            self.assertIn(alan, k)
+        self.assertLess(abs(k["fark_yuzde"]), 0.5,
+                        "iki yontem arasindaki sapma %0.5'i asmamali")
+
+    def test_gecersiz_girdiler_none(self):
+        self.assertIsNone(B._binomial_price("C", 100, 100, 0.3, 0.0, 0.2))
+        self.assertIsNone(B._binomial_price("C", 100, 100, 0.3, 1.0, 0.0))
+        self.assertIsNone(B._binomial_price("X", 100, 100, 0.3, 1.0, 0.2))
+        self.assertIsNone(B._binomial_price("C", 100, 100, 0.3, 1.0, 0.2, steps=0))
+
+
 class TestYield(unittest.TestCase):
 
     def test_bilinen_deger(self):

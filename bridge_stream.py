@@ -251,6 +251,77 @@ def _bs_rho(option_type, spot, strike, rate, t, sigma):
     return None
 
 
+def _binomial_price(option_type, spot, strike, rate, t, sigma,
+                    steps=200, american=False):
+    """
+    Cox-Ross-Rubinstein binom agaci.
+
+    Black-Scholes'un veremedigi tek sey erken kullanim hakkidir; agac her
+    dugumde "simdi kullan" ile "beklemeye devam et" arasinda secim yaparak
+    Amerikan tipi opsiyonlari fiyatlayabilir.
+
+    american=False iken sonuc adim sayisi arttikca Black-Scholes'a yakinsar;
+    bu, iki yontemin birbirini dogrulamasini saglar.
+    """
+    if option_type not in ("C", "P"):
+        return None
+    if spot is None or strike is None or rate is None or t is None or sigma is None:
+        return None
+    if spot <= 0 or strike <= 0 or t <= 0 or sigma <= 0 or steps < 1:
+        return None
+
+    dt = t / steps
+    u = math.exp(sigma * math.sqrt(dt))
+    d = 1.0 / u
+    disk = math.exp(-rate * dt)
+    p = (math.exp(rate * dt) - d) / (u - d)
+    if not (0.0 < p < 1.0):
+        # Adim cok kaba ya da oynaklik faize gore cok dusuk: risksiz olasilik
+        # araligin disina cikar ve agac anlamsizlasir.
+        return None
+
+    def ic_deger(s):
+        return max(s - strike, 0.0) if option_type == "C" else max(strike - s, 0.0)
+
+    # Vade sonu dugumleri
+    degerler = [ic_deger(spot * (u ** (steps - i)) * (d ** i)) for i in range(steps + 1)]
+
+    # Geriye dogru tumevarim
+    for adim in range(steps - 1, -1, -1):
+        for i in range(adim + 1):
+            devam = disk * (p * degerler[i] + (1.0 - p) * degerler[i + 1])
+            if american:
+                s = spot * (u ** (adim - i)) * (d ** i)
+                devam = max(devam, ic_deger(s))
+            degerler[i] = devam
+    return degerler[0]
+
+
+def _fiyat_karsilastir(option_type, spot, strike, rate, t, sigma, steps=200):
+    """
+    Ayni opsiyonu iki yontemle fiyatlayip sapmayi dondurur.
+
+    Dokumandaki "yontemler arasi tutarlilik denetimi" budur: beklenen
+    sayisal toleransi asan bir fark, model ya da parametre tarafinda
+    sorun oldugunun erken gostergesidir.
+    """
+    bs = _bs_price(option_type, spot, strike, rate, t, sigma)
+    avr = _binomial_price(option_type, spot, strike, rate, t, sigma, steps, american=False)
+    ame = _binomial_price(option_type, spot, strike, rate, t, sigma, steps, american=True)
+    if bs is None or avr is None:
+        return None
+    fark = avr - bs
+    return {
+        "black_scholes": bs,
+        "binom_avrupa": avr,
+        "binom_amerikan": ame,
+        "fark": fark,
+        "fark_yuzde": (fark / bs * 100.0) if bs > 1e-12 else None,
+        "erken_kullanim_primi": (ame - avr) if ame is not None else None,
+        "adim": steps,
+    }
+
+
 def _implied_vol_bisect(option_type, market_price, spot, strike, rate, t, tol=1e-8, max_iter=120):
     if market_price is None or spot is None or strike is None or rate is None or t is None:
         return None
