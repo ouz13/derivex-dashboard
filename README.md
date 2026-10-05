@@ -49,7 +49,7 @@ Ayrıntılı kurulum, sorun giderme ve elle çalıştırma için → [KURULUM.md
 | **Options** | Opsiyon zinciri, Black-Scholes ile zımni volatilite ve Greeks |
 | **Realized Vols** | 15/30/60/90/180 günlük gerçekleşmiş volatilite ve GARCH tahmini |
 | **Volatility Curve** | Heston kalibrasyonu, piyasa IV'si ile model karşılaştırması |
-| **Risk** | Monte Carlo VaR / CVaR, portföy P&L dağılımı |
+| **Risk** | Monte Carlo VaR / CVaR, P&L dağılımı, stres testi senaryoları |
 | **Pricer** | Temettü düzeltmeli opsiyon fiyatlayıcı, Greeks ve yöntem karşılaştırması |
 | **Discount Rate / Dividends** | İskonto eğrisi ve temettü girişi |
 
@@ -115,6 +115,22 @@ gösterir. Binom ağacının Avrupa sürümü Black-Scholes'a yakınsamalıdır;
 belirgin bir sapma model ya da parametre tarafında sorun olduğuna işaret
 eder. Amerikan ile Avrupa arasındaki fark erken kullanım hakkının değeridir
 (temettüsüz call'da sıfır, faiz yüksekken derin ITM put'ta belirgin).
+
+## Stres testi
+
+Risk sekmesindeki **Stres Testi** butonu portföyü yedi senaryoda yeniden
+değerler: spot ±%10/-%20, volatilite +%50 ve ×2, ve korelasyonun 0.95'e
+çıktığı bir kriz senaryosu.
+
+İki ayrı şey raporlanır — **anlık etki** şokun kendisinden doğan kar/zarardır
+(tek sayı), **VaR** ise şok sonrası durumda hesaplanan dağılımdan gelir. Tek
+bir VaR sayısı "ne olursa ne olur" sorusunu cevaplamaz; bu katman onu
+tamamlar.
+
+Senaryo VaR'ları baz senaryoyla doğrudan kıyaslanmamalıdır: büyük bir spot
+şoku uzun opsiyonları değersizleştirdiği için geriye kaybedilecek daha az
+şey kalır ve şok sonrası VaR küçülebilir. Okunması gereken, anlık etki ile
+VaR'ın birlikte verdiği resimdir.
 
 ## Testler
 

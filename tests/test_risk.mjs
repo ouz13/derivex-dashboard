@@ -138,6 +138,61 @@ test('simulasyon sayisi cikti uzunlugunu belirler', () => {
   }
 });
 
+// --- stres testi -----------------------------------------------------------
+
+test('stres testi her senaryo icin satir uretir', () => {
+  const s = kapsam._riskStresTest(PORTFOY, { ...VARSAYILAN, nSims: 500, rho: 0.5, conf: 0.99 });
+  assert.equal(s.length, kapsam.RISK_SENARYOLAR.length);
+  for (const r of s) {
+    for (const alan of ['ad', 'portfoyDegeri', 'anlikEtki', 'var']) {
+      assert.ok(alan in r, `${alan} alani yok`);
+    }
+  }
+});
+
+test('baz senaryonun anlik etkisi sifirdir', () => {
+  const s = kapsam._riskStresTest(PORTFOY, { ...VARSAYILAN, nSims: 300, rho: 0.5, conf: 0.99 });
+  assert.equal(s[0].ad, 'Baz senaryo');
+  assert.ok(Math.abs(s[0].anlikEtki) < 1e-6,
+    `baz senaryoda sok olmamali, etki=${s[0].anlikEtki}`);
+});
+
+test('spot soku portfoy degerini delta yonunde degistirir', () => {
+  const s = kapsam._riskStresTest(PORTFOY, { ...VARSAYILAN, nSims: 300, rho: 0.5, conf: 0.99 });
+  const dus10 = s.find((x) => x.ad === 'Spot -%10');
+  const dus20 = s.find((x) => x.ad === 'Spot -%20');
+  const yuk10 = s.find((x) => x.ad === 'Spot +%10');
+  // Portfoy net long delta: spot duserse deger azalir, yukselirse artar
+  assert.ok(dus10.anlikEtki < 0, 'spot dustugunde deger artmis');
+  assert.ok(yuk10.anlikEtki > 0, 'spot yukseldiginde deger azalmis');
+  assert.ok(dus20.anlikEtki < dus10.anlikEtki,
+    '-%20 soku -%10 dan daha agir olmali');
+});
+
+test('volatilite soku portfoy degerini degistirir', () => {
+  const s = kapsam._riskStresTest(PORTFOY, { ...VARSAYILAN, nSims: 300, rho: 0.5, conf: 0.99 });
+  const v15 = s.find((x) => x.ad === 'Volatilite +%50');
+  const v2 = s.find((x) => x.ad === 'Volatilite x2');
+  assert.ok(Math.abs(v15.anlikEtki) > 1e-6, 'vol soku degeri hic etkilememis');
+  assert.ok(Math.abs(v2.anlikEtki) > Math.abs(v15.anlikEtki),
+    'vol x2 etkisi +%50 den buyuk olmali');
+});
+
+test('kriz senaryosu en kotu VaR i uretir', () => {
+  const s = kapsam._riskStresTest(PORTFOY, { ...VARSAYILAN, nSims: 3000, rho: 0.5, conf: 0.99 });
+  const kriz = s.find((x) => x.ad.startsWith('Kriz'));
+  const baz = s[0];
+  assert.ok(kriz.var < baz.var,
+    `kriz VaR'i baz senaryodan kotu olmali: ${kriz.var.toFixed(0)} vs ${baz.var.toFixed(0)}`);
+  assert.equal(kriz.rho, 0.95, 'kriz senaryosu korelasyonu yukseltmeli');
+});
+
+test('senaryolar girdi portfoyunu degistirmez', () => {
+  const kopya = JSON.parse(JSON.stringify(PORTFOY));
+  kapsam._riskStresTest(PORTFOY, { ...VARSAYILAN, nSims: 200, rho: 0.5, conf: 0.99 });
+  assert.deepEqual(PORTFOY, kopya, 'stres testi portfoyu yerinde degistirmis');
+});
+
 test('portfoy degeri pozisyon buyuklugu ile dogrusal olcekler', () => {
   const tek = kapsam._riskSimulate(PORTFOY, { ...VARSAYILAN, nSims: 10, rho: 0.5 });
   const cift = kapsam._riskSimulate(
