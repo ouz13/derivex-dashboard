@@ -102,6 +102,24 @@ Bu kanca `.env` dosyalarını, **yeni** şifre/anahtarları ve aşırı büyük
 dosyaları commit öncesinde yakalar. Mevcut IdealData bilgileri bilinçli bir
 karar olduğu için muaf tutulmuştur.
 
+## Risk: korelasyon varsayımı
+
+Monte Carlo VaR, dayanaklar arası korelasyonu **tek faktörlü** bir modelle
+ele alır:
+
+```
+z_i = √ρ · z_piyasa + √(1−ρ) · z_özgü
+```
+
+`ρ` arayüzden girilir (varsayılan 0.50). BIST hisseleri tek bir piyasada
+işlem gördüğü için gerçekte 0.4–0.7 bandında korelasyon beklenir; `ρ = 0`
+seçmek riski belirgin biçimde olduğundan düşük gösterir.
+
+Bu gerçek bir kovaryans matrisi değildir — tarihsel seri saklanmadığı için
+matris tahmin edilemiyor. Tek ortalama korelasyon parametresi, bağımsızlık
+varsayımına göre çok daha gerçekçi ancak varlık çiftlerine özgü ilişkileri
+yakalamaz.
+
 ## Bilinen davranışlar
 
 **Vade sonuna yakın getiri sütunu çok büyük değerler gösterir.** Yıllık getiri
