@@ -19,6 +19,13 @@ python3 start.py
 
 Tarayıcıda aç: **http://127.0.0.1:5173**
 
+Varsayılan olarak **mock veri** ile açılır (IdealData erişimi gerekmez) ve
+ekranın üstünde kırmızı uyarı şeridi görünür. Canlı veri için:
+
+```bash
+DATA_MODE=1 python3 start.py
+```
+
 Durdurmak için `Ctrl+C`.
 
 `start.py` sırayla şunları yapar: ön kontroller → veri erişim testi →

@@ -12,6 +12,28 @@ python3 start.py
 
 Ayar gerekmez — IdealData bağlantı bilgileri kodda gömülüdür.
 
+## Veri kaynağı anahtarı
+
+`DATA_MODE` iki modu seçer:
+
+| Değer | Mod | Veri kaynağı |
+|---|---|---|
+| `0` *(varsayılan)* | **MOCK** | `mock_feed.py` — üretilmiş örnek veri, IdealData erişimi gerekmez |
+| `1` | **CANLI** | `bridge_stream.py` — gerçek IdealData akışı |
+
+```bash
+python3 start.py                 # mock (varsayılan)
+DATA_MODE=1 python3 start.py     # canlı
+```
+
+Mock moddayken ekranın üstünde kırmızı bir uyarı şeridi görünür. Bu
+kasıtlıdır: üretilmiş sayıların piyasa verisi sanılmasını önler.
+
+Mock veri, canlı moddakiyle **birebir aynı API uçlarından** ve aynı JSON
+şeklinde akar; opsiyon fiyatları Black-Scholes'tan üretilir, gerçekleşmiş
+volatilite değerleri tahmin dosyasıyla tutarlı tutulur. Yani mock modda
+çalışan bir ekran canlı modda da çalışır.
+
 Tarayıcıda: **http://127.0.0.1:5173** — durdurmak için `Ctrl+C`.
 
 Ayrıntılı kurulum, sorun giderme ve elle çalıştırma için → [KURULUM.md](KURULUM.md)

@@ -25,6 +25,11 @@ import time
 KOK = os.path.dirname(os.path.abspath(__file__))
 VARSAYILAN_PORT = 5173
 
+# Veri kaynagi anahtari:  0 = MOCK (uretilmis veri),  1 = CANLI (IdealData)
+# _frontend_runtime.js de ayni degiskeni okur.
+DATA_MODE = int(os.environ.get("DATA_MODE", "0"))
+MOCK_MODE = DATA_MODE == 0
+
 _surecler = []
 
 
@@ -90,7 +95,7 @@ def on_kontrol(port):
         yaz("hata", "requests yok — kurun:  pip3 install requests")
         tamam = False
 
-    for f in ("_frontend_runtime.js", "bridge_stream.py"):
+    for f in ("_frontend_runtime.js", "mock_feed.py" if MOCK_MODE else "bridge_stream.py"):
         if os.path.isfile(os.path.join(KOK, f)):
             yaz("ok", f)
         else:
@@ -167,14 +172,17 @@ def dashboard_baslat(port):
 # ---------------------------------------------------------------- 4) kopru
 
 def kopru_baslat(port):
-    baslik("4/4  Veri koprusu")
+    baslik("4/4  Veri kaynagi")
+    script = "mock_feed.py" if MOCK_MODE else "bridge_stream.py"
     log_yolu = os.path.join(KOK, "bridge.log")
     log = open(log_yolu, "w")
-    ortam = dict(os.environ, FRONTEND_BASE_URL=f"http://127.0.0.1:{port}")
-    p = subprocess.Popen([sys.executable, "-u", "bridge_stream.py"], cwd=KOK,
+    ortam = dict(os.environ,
+                 FRONTEND_BASE_URL=f"http://127.0.0.1:{port}",
+                 DATA_MODE=str(DATA_MODE))
+    p = subprocess.Popen([sys.executable, "-u", script], cwd=KOK,
                          stdout=log, stderr=subprocess.STDOUT, env=ortam)
     _surecler.append(("kopru", p))
-    yaz("bilgi", "baglaniliyor...")
+    yaz("bilgi", f"{script} baslatiliyor...")
 
     for _ in range(60):                  # 30 sn
         time.sleep(0.5)
@@ -183,6 +191,9 @@ def kopru_baslat(port):
             _log_kuyrugu(log_yolu, 6)
             return False
         metin = _log_oku(log_yolu)
+        if MOCK_MODE and "[MOCK]" in metin:
+            yaz("ok", "uretilmis veri besleniyor")
+            return True
         if "Stream bridge started" in metin:
             yaz("ok", "akisa baglandi")
             return True
@@ -234,7 +245,7 @@ def izle(port):
                 # Kopru olmadan arayuz ayakta kalir, sadece tablolar bos gelir.
                 kopru_uyarildi = True
                 yaz("hata", "veri koprusu durdu — arayuz calisiyor ama veri akmiyor")
-                yaz("bilgi", "yeniden denemek icin:  python3 bridge_stream.py")
+                yaz("bilgi", f"yeniden denemek icin:  python3 {'mock_feed.py' if MOCK_MODE else 'bridge_stream.py'}")
 
         # koprunun kendi ozet satirini yansit
         for ln in reversed(_log_oku(log_yolu).splitlines()):
@@ -257,7 +268,7 @@ def main():
     signal.signal(signal.SIGINT, kapat_hepsi)
     signal.signal(signal.SIGTERM, kapat_hepsi)
 
-    print("\n  DERIVEX DASHBOARD")
+    print("\n  DERIVEX DASHBOARD" + ("   [MOCK VERI]" if MOCK_MODE else "   [CANLI VERI]"))
     print("  " + "=" * 56)
 
     if a.check_only:
@@ -267,7 +278,11 @@ def main():
         print("\n  On kontroller basarisiz. Yukaridaki [!!] satirlarini giderin.\n")
         sys.exit(1)
 
-    if not a.no_check and not veri_testi():
+    if MOCK_MODE:
+        baslik("2/4  Veri erisimi")
+        yaz("ok", "MOCK mod — IdealData erisimi gerekmiyor")
+        yaz("bilgi", "canli veri icin:  DATA_MODE=1 python3 start.py")
+    elif not a.no_check and not veri_testi():
         print("\n  Veri alinamiyor. Bu makinenin IP'si IdealData'da tanimli degil")
         print("  gorunuyor. Yine de baslatmak icin:  python3 start.py --no-check\n")
         sys.exit(1)

@@ -71,6 +71,18 @@ const optionColumnDefs = [
   { key: 'put_ask_size', label: 'P Ask Sz' }
 ];
 
+// ---------------------------------------------------------------------------
+// VERI KAYNAGI ANAHTARI
+//   0 = MOCK  : uretilmis ornek veri (IdealData erisimi gerekmez)
+//   1 = CANLI : gercek IdealData akisi ve REST ucu
+//
+// Mock moddayken arayuzde kirmizi bir uyari serididir gorunur. Bu kasitlidir:
+// uretilmis sayilarin canli piyasa verisi sanilmasi onlenir.
+// Ortam degiskeniyle de ezilebilir:  DATA_MODE=1 node _frontend_runtime.js
+// ---------------------------------------------------------------------------
+const DATA_MODE = process.env.DATA_MODE !== undefined ? Number(process.env.DATA_MODE) : 0;
+const MOCK_MODE = DATA_MODE === 0;
+
 const serverState = {
   spotByTicker: {},
   futuresRatesByTicker: {},
@@ -289,6 +301,12 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
 </head>
 <body>
   <div class="app">
+    ${MOCK_MODE ? `<div style="background:#b42318;color:#fff;padding:7px 14px;margin:-10px -16px 10px -16px;
+         font-weight:700;font-size:13px;display:flex;gap:10px;align-items:center;">
+      <span style="font-size:15px;">&#9888;</span>
+      MOCK VERİ — bu ekrandaki sayılar üretilmiştir, piyasa verisi değildir.
+      <span style="font-weight:400;opacity:.85;">Canlı veri için: DATA_MODE=1</span>
+    </div>` : ''}
     <div class="top-title">
       <span class="dot"></span>
       <div class="title-wrap">
@@ -1586,7 +1604,18 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
       const putModelHeadEl = document.getElementById('vcPutModelHead');
 
       const TARGET_TICKER = 'THYAO';
-      const TARGET_EXPIRY = '0526';
+      // Vade sabit kodlanmaz: zincirde gelen en yakin (en kucuk DTM) vade
+      // secilir. Sabit bir kod, vade gectiginde ekrani kalici olarak bosaltir.
+      function enYakinVade(rows) {
+        let secili = null, enKucuk = Infinity;
+        for (const r of rows) {
+          const d = Number(r && r.dtm);
+          const e = String((r && r.expiry) || '');
+          if (!e || !Number.isFinite(d) || d < 0) continue;
+          if (d < enKucuk) { enKucuk = d; secili = e; }
+        }
+        return secili;
+      }
 
       function esc(s) {
         return String(s || '')
@@ -2034,20 +2063,21 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         if (callModelHeadEl) callModelHeadEl.textContent = 'Call ' + modelLabel + ' IV';
         if (putModelHeadEl) putModelHeadEl.textContent = 'Put ' + modelLabel + ' IV';
 
-        if (statusEl) statusEl.textContent = 'Loading THYAO 0526 chain...';
+        if (statusEl) statusEl.textContent = 'Loading THYAO chain...';
         if (refreshBtn) refreshBtn.disabled = true;
         try {
           const resp = await fetch('/api/options-chain?ticker=' + TARGET_TICKER);
           if (!resp.ok) throw new Error('HTTP ' + resp.status);
           const data = await resp.json();
           const rawRows = Array.isArray(data && data.options) ? data.options : [];
-          const rows = rawRows.filter((r) => String(r?.expiry || '') === TARGET_EXPIRY)
+          const vade = enYakinVade(rawRows);
+          const rows = rawRows.filter((r) => String(r?.expiry || '') === vade)
             .sort((a, b) => Number(a?.strike || 0) - Number(b?.strike || 0));
 
           if (!rows.length) {
-            if (bodyEl) bodyEl.innerHTML = '<tr><td class="options-empty" colspan="9">No THYAO rows found for May maturity (0526).</td></tr>';
+            if (bodyEl) bodyEl.innerHTML = '<tr><td class="options-empty" colspan="9">No THYAO option rows available.</td></tr>';
             renderCurveSvg([], [], modelLabel);
-            if (statusEl) statusEl.textContent = 'No rows for THYAO / 0526 yet. Keep market bridge running in main.ipynb.';
+            if (statusEl) statusEl.textContent = 'No THYAO rows yet. Keep the data source running.';
             return;
           }
 
@@ -3181,7 +3211,7 @@ function toolsContent(toolsTab) {
         <div class="card-head">
           <div>
             <h2 class="section-title">Volatility Curve (Heston)</h2>
-            <p class="rv-top-note">Example view fixed to THYAO and May maturity (0526). Market chain rows are compared against Heston-implied vols.</p>
+            <p class="rv-top-note">Example view fixed to THYAO, nearest maturity. Market chain rows are compared against Heston-implied vols.</p>
           </div>
           <div style="display:flex; align-items:center; gap:8px;">
             <label for="vcModelSelect" style="font-size:12px; color:#475569;">Model</label>
@@ -3192,7 +3222,7 @@ function toolsContent(toolsTab) {
             <button class="action-btn" type="button" id="vcRefreshBtn">Refresh</button>
           </div>
         </div>
-        <div class="vc-status" id="vcStatus">Waiting for THYAO 0526 market data...</div>
+        <div class="vc-status" id="vcStatus">Waiting for THYAO market data...</div>
         <div class="vc-legend">
           <span><span class="vc-dot market"></span>Market IV</span>
           <span><span class="vc-dot heston"></span><span id="vcLegendModelText">Heston IV</span></span>
@@ -3551,7 +3581,58 @@ function computeRealizedVolPercent(prices, endMs, windowDays) {
   return Number.isFinite(annualized) ? Number(annualized.toFixed(2)) : null;
 }
 
+// Mock modda gerceklesmis volatilite tablosunu uretir.
+// Ticker adindan tureyen sabit bir tohum kullanilir: ayni ticker her
+// calistirmada ayni degerleri alir, tablo arastirma sirasinda zipliamaz.
+// Fcst sutunu tahmin dosyasindan okunur; mock RV degerleri de ayni dosyadaki
+// tahminlerin etrafinda uretilir ki tablo kendi icinde tutarli olsun
+// (aksi halde RV %20 iken tahmin %46 gibi anlamsiz ciftler cikiyor).
+function mockTahminTabani() {
+  try {
+    const p = path.join(__dirname, 'realized_forecasts_all_models.json');
+    if (!fs.existsSync(p)) return {};
+    const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const lookback = d.lookbacks && (d.lookbacks['4Y'] || Object.values(d.lookbacks)[0]);
+    if (!lookback) return {};
+    const out = {};
+    for (const [ticker, modeller] of Object.entries(lookback)) {
+      out[ticker] = modeller['GARCH(1,1)'] || Object.values(modeller)[0] || {};
+    }
+    return out;
+  } catch (_) {
+    return {};
+  }
+}
+
+function buildMockRealizedVolTable() {
+  const windows = realizedVolWindows;
+  const tahmin = mockTahminTabani();
+  const rows = realizedVolTickers.map((ticker) => {
+    let seed = 0;
+    for (let i = 0; i < ticker.length; i++) seed = (seed * 31 + ticker.charCodeAt(i)) % 9973;
+    const tahminSatiri = tahmin[ticker] || {};
+    const row = { Ticker: ticker };
+    windows.forEach((w, i) => {
+      const t = Number(tahminSatiri[`${w}D (%)`]);
+      // Tahmin varsa onun etrafinda, yoksa tickera sabit makul bir seviyede
+      const merkez = Number.isFinite(t) ? t : 22 + (seed % 2600) / 100;
+      const sapma = (((seed * (i + 5)) % 300) - 150) / 100;   // ±%1.5
+      row[`${w}D RV`] = Math.round((merkez + sapma) * 100) / 100;
+    });
+    return row;
+  });
+  rows.sort((a, b) => String(a.Ticker).localeCompare(String(b.Ticker)));
+  // Sekil canli moddakiyle ayni olmali: cagiran taraf rows/generated_at bekliyor.
+  return {
+    generated_at: new Date().toISOString(),
+    rows,
+    windows: realizedVolWindows.slice(),
+  };
+}
+
 async function buildRealizedVolTable() {
+  if (MOCK_MODE) return buildMockRealizedVolTable();
+
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 
