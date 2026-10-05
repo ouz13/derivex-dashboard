@@ -61,6 +61,43 @@ def kapat_hepsi(*_):
 
 # ---------------------------------------------------------------- 1) kontrol
 
+GEREKLI_KIMLIK = ("STREAM_USERNAME", "STREAM_PASSWORD", "IDEALDATA_API_KEY")
+
+
+def kimlik_kontrol():
+    """
+    Kimlik bilgileri .env'de ya da ortamda var mi?
+
+    Bu kontrol veri testinden ONCE yapilir: .env yokken veri testi basarisiz
+    olur ve sebebi IP yetkisizligi sanilir. Ikisi farkli sorunlardir.
+    """
+    env_yolu = os.path.join(KOK, ".env")
+    degerler = {}
+
+    if os.path.isfile(env_yolu):
+        with open(env_yolu, encoding="utf-8") as f:
+            for satir in f:
+                satir = satir.strip()
+                if satir and not satir.startswith("#") and "=" in satir:
+                    k, v = satir.split("=", 1)
+                    degerler[k.strip()] = v.strip().strip('"').strip("'")
+
+    eksik = [ad for ad in GEREKLI_KIMLIK
+             if not (degerler.get(ad) or os.environ.get(ad))]
+
+    if not eksik:
+        yaz("ok", ".env kimlik bilgileri")
+        return True
+
+    if not os.path.isfile(env_yolu):
+        yaz("hata", ".env dosyasi yok — kimlik bilgileri tanimli degil")
+        yaz("bilgi", "cp .env.example .env   sonra icini doldurun")
+    else:
+        yaz("hata", f".env eksik: {', '.join(eksik)}")
+    yaz("bilgi", f"gerekli: {', '.join(GEREKLI_KIMLIK)}")
+    return False
+
+
 def on_kontrol(port):
     baslik("1/4  On kontroller")
     tamam = True
@@ -96,6 +133,9 @@ def on_kontrol(port):
         else:
             yaz("hata", f"{f} bulunamadi — paket eksik")
             tamam = False
+
+    if not kimlik_kontrol():
+        tamam = False
 
     if port_dolu(port):
         yaz("hata", f"port {port} kullanimda — baska bir dashboard acik olabilir")

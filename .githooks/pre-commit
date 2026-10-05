@@ -21,12 +21,18 @@ MAX_MB = 45
 YASAK_DOSYALAR = re.compile(r"(^|/)\.env$|(^|/)\.env\.(local|prod|production)$|"
                             r"\.pem$|\.p12$|(^|/)id_rsa$|(^|/)id_ed25519$")
 
-# Staged icerikte aranan desenler.  (ad, desen, ornek-yanlis-alarm-filtresi)
+# Staged icerikte aranan desenler.
+#
+# (?![A-Z][A-Z0-9_]*["\']) : degerin kendisi ALL_CAPS bir degisken ADI ise
+# eslesme. Boylece ("STREAM_USERNAME", "STREAM_PASSWORD") gibi ad listeleri
+# yanlis alarm uretmez; aranan sey gercek bir deger atamasidir.
+_AD_DEGIL = r'(?![A-Z][A-Z0-9_]*["\'])'
+
 DESENLER = [
     ("stream sifresi",
-     re.compile(r'STREAM_PASSWORD\s*["\']?\s*[,=]\s*["\'][^"\']{4,}["\']')),
+     re.compile(r'STREAM_PASSWORD\s*["\']?\s*[,=]\s*["\']' + _AD_DEGIL + r'[^"\']{4,}["\']')),
     ("stream kullanici",
-     re.compile(r'STREAM_USERNAME\s*["\']?\s*[,=]\s*["\'][^"\']{3,}["\']')),
+     re.compile(r'STREAM_USERNAME\s*["\']?\s*[,=]\s*["\']' + _AD_DEGIL + r'[^"\']{3,}["\']')),
     ("api key / token",
      re.compile(r'(?i)(api_?key|secret|token|passwd|password)\s*[:=]\s*'
                 r'["\'][A-Za-z0-9_\-+/=]{16,}["\']')),
