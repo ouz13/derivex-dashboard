@@ -3,6 +3,6 @@
     "xlsx": "^0.18.5"
   },
   "scripts": {
-    "test": "node --test 'tests/*.mjs' && python3 -m unittest discover tests"
+    "test": "node --test tests/*.mjs && python3 -m unittest discover tests"
   }
 }
