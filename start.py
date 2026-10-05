@@ -23,7 +23,13 @@ import sys
 import time
 
 KOK = os.path.dirname(os.path.abspath(__file__))
-VARSAYILAN_PORT = 5173
+# Varsayilan port ortam degiskeninden okunur: konteynerde PORT verildiginde
+# start.py'nin onu yok sayip 5173'te acmasi, EXPOSE edilen port ile uyusmazlik
+# yaratiyordu. --port bayragi yine her seyin ustundedir.
+try:
+    VARSAYILAN_PORT = int(os.environ.get("PORT", "5173"))
+except ValueError:
+    VARSAYILAN_PORT = 5173
 
 # Veri kaynagi anahtari:  0 = MOCK (uretilmis veri),  1 = CANLI (IdealData)
 # _frontend_runtime.js de ayni degiskeni okur.

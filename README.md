@@ -132,6 +132,26 @@ Senaryo VaR'ları baz senaryoyla doğrudan kıyaslanmamalıdır: büyük bir spo
 şey kalır ve şok sonrası VaR küçülebilir. Okunması gereken, anlık etki ile
 VaR'ın birlikte verdiği resimdir.
 
+## Docker
+
+```bash
+docker build -t derivex-dashboard .
+docker run --rm -p 5173:5173 derivex-dashboard                 # mock veri
+docker run --rm -p 5173:5173 -e DATA_MODE=1 derivex-dashboard  # canlı veri
+```
+
+İmaj Node ve Python'u birlikte taşır; `npm install` gerekmez çünkü sunucu
+yalnızca Node'un yerleşik modüllerini kullanır. Konteyner `HOST=0.0.0.0` ile
+açılır, aksi halde dışarıdan erişilemez.
+
+Canlı modda konteynerin dışa açık IP'sinin IdealData'da tanımlı olması gerekir.
+
+## CI
+
+`.github/workflows/ci.yml` her push ve pull request'te iki iş çalıştırır:
+testler (Node + Python + sözdizimi) ve Docker imajının derlenip gerçekten
+ayağa kalkması.
+
 ## Testler
 
 ```bash

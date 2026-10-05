@@ -1,0 +1,11 @@
+.git
+.github
+node_modules
+__pycache__
+*.pyc
+*.log
+.env
+*.zip
+tests
+idealdata_probe_*.json
+idealdata_probe_*_akis_ham.txt

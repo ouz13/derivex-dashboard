@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python bagimliliklari
+        run: pip install requests
+
+      - name: Node testleri
+        run: node --test "tests/*.mjs"
+
+      - name: Python testleri
+        run: python3 -m unittest discover tests -v
+
+      - name: Sozdizimi kontrolu
+        run: |
+          node --check _frontend_runtime.js
+          python3 -m py_compile bridge_stream.py bridge_http.py mock_feed.py start.py idealdata_probe.py
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Imaji derle
+        run: docker build -t derivex-dashboard .
+
+      - name: Konteyner ayaga kalkiyor mu
+        run: |
+          docker run -d --name dx -p 5173:5173 derivex-dashboard
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:5173/ > /dev/null; then
+              echo "dashboard yanit veriyor"
+              docker rm -f dx
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "dashboard 60 sn icinde yanit vermedi"
+          docker logs dx
+          docker rm -f dx
+          exit 1
