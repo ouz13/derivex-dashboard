@@ -57,11 +57,19 @@ const optionColumnDefs = [
   { key: 'call_bid_iv', label: 'C Bid IV' },
   { key: 'call_ask_iv', label: 'C Ask IV' },
   { key: 'call_delta', label: 'C Δ' },
+  { key: 'call_gamma', label: 'C Γ' },
+  { key: 'call_vega', label: 'C Vega' },
+  { key: 'call_theta', label: 'C Θ' },
+  { key: 'call_rho', label: 'C Rho' },
   { key: 'expiry', label: 'Expiry' },
   { key: 'strike', label: 'Strike' },
   { key: 'dtm', label: 'DTM' },
   { key: 'rate', label: 'Rate' },
   { key: 'spot_mid', label: 'Spot' },
+  { key: 'put_rho', label: 'P Rho' },
+  { key: 'put_theta', label: 'P Θ' },
+  { key: 'put_vega', label: 'P Vega' },
+  { key: 'put_gamma', label: 'P Γ' },
   { key: 'put_delta', label: 'P Δ' },
   { key: 'put_bid_iv', label: 'P Bid IV' },
   { key: 'put_ask_iv', label: 'P Ask IV' },
@@ -2512,6 +2520,12 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
       const cai = row?.call_ask_iv !== null && row?.call_ask_iv !== undefined ? (row.call_ask_iv * 100).toFixed(2) + '%' : '-';
       const cdt = row?.call_delta !== null && row?.call_delta !== undefined ? fmt(row.call_delta, 4) : '-';
       const pdt = row?.put_delta !== null && row?.put_delta !== undefined ? fmt(row.put_delta, 4) : '-';
+      // Gamma ve theta buyukluk olarak delta'dan kucuk; 5 hane okunakli kaliyor.
+      const gre = (v, n) => (v !== null && v !== undefined && Number.isFinite(Number(v)) ? fmt(v, n) : '-');
+      const cgm = gre(row?.call_gamma, 5), pgm = gre(row?.put_gamma, 5);
+      const cvg = gre(row?.call_vega, 4),  pvg = gre(row?.put_vega, 4);
+      const cth = gre(row?.call_theta, 4), pth = gre(row?.put_theta, 4);
+      const crh = gre(row?.call_rho, 4),   prh = gre(row?.put_rho, 4);
       const pbi = row?.put_bid_iv !== null && row?.put_bid_iv !== undefined ? (row.put_bid_iv * 100).toFixed(2) + '%' : '-';
       const pai = row?.put_ask_iv !== null && row?.put_ask_iv !== undefined ? (row.put_ask_iv * 100).toFixed(2) + '%' : '-';
       const pbs = fmtSize(row?.put_bid_size);
@@ -2536,7 +2550,9 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
       const putAskIvAttr = Number.isFinite(putAskIvNum) && putAskIvNum > 0 ? String(putAskIvNum) : '';
       const rowAttrs = ' data-option-row="true" data-ticker="' + (ticker || '') + '" data-expiry="' + (row?.expiry || '') + '" data-strike="' + (row?.strike || '') + '" data-dtm="' + dtmAttr + '" data-rate="' + rateAttr + '" data-maturity="' + maturityAttr + '" data-call-iv="' + callIvAttr + '" data-put-iv="' + putIvAttr + '" data-call-bid-iv="' + callBidIvAttr + '" data-call-ask-iv="' + callAskIvAttr + '" data-put-bid-iv="' + putBidIvAttr + '" data-put-ask-iv="' + putAskIvAttr + '" style="cursor: pointer;"';
       return '<tr' + hiddenAttr + rowAttrs + '><td>' + cbs + '</td><td>' + cbp + '</td><td>' + cap + '</td><td>' + cas + '</td><td>' + cbi + '</td><td>' + cai + '</td><td>' + cdt + '</td>'
+        + '<td>' + cgm + '</td><td>' + cvg + '</td><td>' + cth + '</td><td>' + crh + '</td>'
         + '<td><span class="exp-chip">' + exp + '</span></td><td>' + str + '</td><td>' + dtm + '</td><td>' + rate + '</td><td>' + spot + '</td>'
+        + '<td>' + prh + '</td><td>' + pth + '</td><td>' + pvg + '</td><td>' + pgm + '</td>'
         + '<td>' + pdt + '</td><td>' + pbi + '</td><td>' + pai + '</td><td>' + pbs + '</td><td>' + pbp + '</td><td>' + pap + '</td><td>' + pas + '</td></tr>';
     }
 
@@ -4326,7 +4342,15 @@ const server = http.createServer(async (req, res) => {
             call_bid_iv: toNum(row?.call_bid_iv),
             call_ask_iv: toNum(row?.call_ask_iv),
             call_delta: toNum(row?.call_delta),
+            call_gamma: toNum(row?.call_gamma),
+            call_vega: toNum(row?.call_vega),
+            call_theta: toNum(row?.call_theta),
+            call_rho: toNum(row?.call_rho),
             put_delta: toNum(row?.put_delta),
+            put_gamma: toNum(row?.put_gamma),
+            put_vega: toNum(row?.put_vega),
+            put_theta: toNum(row?.put_theta),
+            put_rho: toNum(row?.put_rho),
             put_bid_iv: toNum(row?.put_bid_iv),
             put_ask_iv: toNum(row?.put_ask_iv),
             put_bid_size: toNum(row?.put_bid_size),

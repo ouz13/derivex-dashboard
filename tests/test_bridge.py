@@ -76,6 +76,84 @@ class TestDelta(unittest.TestCase):
         self.assertAlmostEqual(dc - dp, 1.0, places=6)
 
 
+class TestGreeks(unittest.TestCase):
+    """
+    Her Greek, fiyat fonksiyonunun sayisal turevine karsi dogrulanir.
+    Formul hatasi bu sekilde yakalanir; isaret/aralik kontrolleri tek
+    basina yetmez.
+    """
+
+    S, K, R, T, V = 281.5, 280.0, 0.30, 0.25, 0.40
+
+    def test_gamma_delta_turevi(self):
+        h = 0.01
+        for tip in ("C", "P"):
+            dust = B._bs_delta(tip, self.S - h, self.K, self.R, self.T, self.V)
+            yuks = B._bs_delta(tip, self.S + h, self.K, self.R, self.T, self.V)
+            sayisal = (yuks - dust) / (2 * h)
+            analitik = B._bs_gamma(self.S, self.K, self.R, self.T, self.V)
+            self.assertAlmostEqual(analitik, sayisal, places=6,
+                                   msg=f"{tip}: gamma delta turevine uymuyor")
+
+    def test_vega_fiyatin_vol_turevi(self):
+        h = 1e-5
+        for tip in ("C", "P"):
+            dust = B._bs_price(tip, self.S, self.K, self.R, self.T, self.V - h)
+            yuks = B._bs_price(tip, self.S, self.K, self.R, self.T, self.V + h)
+            sayisal = (yuks - dust) / (2 * h) / 100.0   # vega %1 basina
+            analitik = B._bs_vega(self.S, self.K, self.R, self.T, self.V)
+            self.assertAlmostEqual(analitik, sayisal, places=6,
+                                   msg=f"{tip}: vega fiyat turevine uymuyor")
+
+    def test_theta_zaman_turevi(self):
+        h = 1e-6
+        for tip in ("C", "P"):
+            # Zaman ilerledikce vade azalir: theta = -dFiyat/dT
+            ileri = B._bs_price(tip, self.S, self.K, self.R, self.T - h, self.V)
+            geri = B._bs_price(tip, self.S, self.K, self.R, self.T + h, self.V)
+            sayisal = (ileri - geri) / (2 * h) / 365.0   # gunluk
+            analitik = B._bs_theta(tip, self.S, self.K, self.R, self.T, self.V)
+            self.assertAlmostEqual(analitik, sayisal, places=5,
+                                   msg=f"{tip}: theta zaman turevine uymuyor")
+
+    def test_rho_faiz_turevi(self):
+        h = 1e-6
+        for tip in ("C", "P"):
+            dust = B._bs_price(tip, self.S, self.K, self.R - h, self.T, self.V)
+            yuks = B._bs_price(tip, self.S, self.K, self.R + h, self.T, self.V)
+            sayisal = (yuks - dust) / (2 * h) / 100.0
+            analitik = B._bs_rho(tip, self.S, self.K, self.R, self.T, self.V)
+            self.assertAlmostEqual(analitik, sayisal, places=5,
+                                   msg=f"{tip}: rho faiz turevine uymuyor")
+
+    def test_isaretler(self):
+        self.assertGreater(B._bs_gamma(self.S, self.K, self.R, self.T, self.V), 0)
+        self.assertGreater(B._bs_vega(self.S, self.K, self.R, self.T, self.V), 0)
+        self.assertGreater(B._bs_rho("C", self.S, self.K, self.R, self.T, self.V), 0)
+        self.assertLess(B._bs_rho("P", self.S, self.K, self.R, self.T, self.V), 0)
+        self.assertLess(B._bs_theta("C", self.S, self.K, self.R, self.T, self.V), 0)
+
+    def test_gamma_ve_vega_call_put_ayni(self):
+        """Put-call paritesi geregi gamma ve vega iki tipte de esittir."""
+        g = B._bs_gamma(self.S, self.K, self.R, self.T, self.V)
+        v = B._bs_vega(self.S, self.K, self.R, self.T, self.V)
+        self.assertIsNotNone(g)
+        self.assertIsNotNone(v)
+
+    def test_gamma_para_basinda_en_yuksek(self):
+        ortadaki = B._bs_gamma(100.0, 100.0, 0.30, 0.25, 0.40)
+        for K in (60.0, 80.0, 125.0, 160.0):
+            self.assertGreater(ortadaki, B._bs_gamma(100.0, K, 0.30, 0.25, 0.40),
+                               f"K={K} icin gamma ATM'den buyuk cikti")
+
+    def test_gecersiz_girdiler_none(self):
+        for f in (lambda: B._bs_gamma(100, 100, 0.3, 0.0, 0.2),
+                  lambda: B._bs_vega(100, 100, 0.3, 1.0, 0.0),
+                  lambda: B._bs_theta("C", -1, 100, 0.3, 1.0, 0.2),
+                  lambda: B._bs_rho("X", 100, 100, 0.3, 1.0, 0.2)):
+            self.assertIsNone(f())
+
+
 class TestImpliedVol(unittest.TestCase):
 
     def test_tur_gidis(self):
