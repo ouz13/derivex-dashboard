@@ -29,6 +29,9 @@ DATA_MODE=1 python3 start.py     # canlı
 Mock moddayken ekranın üstünde kırmızı bir uyarı şeridi görünür. Bu
 kasıtlıdır: üretilmiş sayıların piyasa verisi sanılmasını önler.
 
+Mock modda Risk sekmesi de örnek bir portföyle dolu gelir (canlı modda portföy
+XLSX ile içeri aktarılır; ilgili uç canlı modda kapalıdır).
+
 Mock veri, canlı moddakiyle **birebir aynı API uçlarından** ve aynı JSON
 şeklinde akar; opsiyon fiyatları Black-Scholes'tan üretilir, gerçekleşmiş
 volatilite değerleri tahmin dosyasıyla tutarlı tutulur. Yani mock modda

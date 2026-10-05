@@ -2772,7 +2772,49 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
     initRisk();
 
     function initRisk() {
-      // Risk tab now operates exclusively via XLSX file upload (riskHandleImport in /risk-handler.js)
+      // Canli modda portfoy yalnizca XLSX ile iceri aktarilir
+      // (riskHandleImport, /risk-handler.js).
+      //
+      // Mock modda sunucu ornek bir portfoy sunar; uc canli modda 404
+      // dondugu icin istemci tarafinda ayrica bayrak tasimaya gerek yok.
+      fetch('/api/mock-portfolio')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          var poz = d && d.ok && Array.isArray(d.positions) ? d.positions : [];
+          if (!poz.length) return;
+
+          var tbody = document.getElementById('riskPortfolioBody');
+          if (!tbody) return;
+          window._riskPortfolio = poz;
+          tbody.innerHTML = '';
+          poz.forEach(function (p, i) {
+            var tr = document.createElement('tr');
+            tr.style.background = i % 2 === 0 ? '#f8fafc' : '#fff';
+            var renk = p.qty >= 0 ? '#16a34a' : '#dc2626';
+            var h = 'padding:4px 10px;';
+            tr.innerHTML =
+              '<td style="' + h + 'text-align:left">' + p.underlying + '</td>' +
+              '<td style="' + h + 'text-align:left;text-transform:capitalize">' + p.posType + '</td>' +
+              '<td style="' + h + 'text-align:right">' + p.strike.toFixed(2) + '</td>' +
+              '<td style="' + h + 'text-align:left">' + p.expiry + '</td>' +
+              '<td style="' + h + 'text-align:right">' + p.dtm + '</td>' +
+              '<td style="' + h + 'text-align:right">' + p.spot.toFixed(3) + '</td>' +
+              '<td style="' + h + 'text-align:right;font-weight:600;color:' + renk + '">' + p.qty.toFixed(0) + '</td>' +
+              '<td style="' + h + 'text-align:right">' + p.delta.toFixed(4) + '</td>';
+            tbody.appendChild(tr);
+          });
+
+          var wrap = document.getElementById('riskPortfolioWrap');
+          var mc = document.getElementById('riskMcPanel');
+          if (wrap) wrap.style.display = '';
+          if (mc) mc.style.display = '';
+          var st = document.getElementById('riskStatus');
+          if (st) {
+            st.textContent = poz.length + ' ornek pozisyon yuklendi (MOCK VERI) — '
+              + 'parametreleri ayarlayip Run VaR Simulation calistirin.';
+          }
+        })
+        .catch(function () { /* canli mod ya da uc kapali: sessiz gec */ });
     }
 
     const FAIR_RATE_STORAGE_KEY = 'futuresFairRateByCode';
@@ -4297,6 +4339,46 @@ const server = http.createServer(async (req, res) => {
     try { fs.writeFileSync(PRICER_LOG_FILE, '[]', 'utf8'); } catch (_) {}
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  // Mock modda Risk sekmesi icin ornek portfoy. Guncel spot fiyatlardan
+  // kuruldugu icin kullanim fiyatlari ve delta'lar tutarli cikar.
+  // Canli modda bu uc kapalidir: portfoy XLSX ile iceri aktarilir.
+  if (url.pathname === '/api/mock-portfolio' && req.method === 'GET') {
+    if (!MOCK_MODE) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, error: 'yalnizca mock modda' }));
+      return;
+    }
+    const vade = (serverState.futuresMeta || []).find((m) => Number(m.dtm) > 5)
+              || (serverState.futuresMeta || [])[0];
+    const tanim = [
+      { ticker: 'THYAO', posType: 'call', qty: 100, moneyness: 1.00 },
+      { ticker: 'THYAO', posType: 'put', qty: -50, moneyness: 0.98 },
+      { ticker: 'GARAN', posType: 'call', qty: 200, moneyness: 1.02 },
+      { ticker: 'AKBNK', posType: 'put', qty: -100, moneyness: 0.96 },
+      { ticker: 'ASELS', posType: 'call', qty: 50, moneyness: 1.05 },
+    ];
+    const pozisyonlar = [];
+    for (const t of tanim) {
+      const spot = Number((serverState.spotByTicker[t.ticker] || {}).spot_mid);
+      if (!Number.isFinite(spot) || spot <= 0 || !vade) continue;
+      const strike = Math.round(spot * t.moneyness * 100) / 100;
+      // Kaba delta yaklasimi: para-basi 0.5, parada/disinda kayar
+      const d = 0.5 + (spot - strike) / spot * 4;
+      const delta = t.posType === 'call'
+        ? Math.max(0.02, Math.min(0.98, d))
+        : -Math.max(0.02, Math.min(0.98, 1 - d));
+      pozisyonlar.push({
+        underlying: t.ticker, posType: t.posType, qty: t.qty,
+        spot: Math.round(spot * 1000) / 1000, strike,
+        delta: Math.round(delta * 10000) / 10000,
+        dtm: Number(vade.dtm), expiry: String(vade.code || ''),
+      });
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: true, positions: pozisyonlar }));
     return;
   }
 
