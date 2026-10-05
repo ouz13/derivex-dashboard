@@ -102,6 +102,19 @@ Bu kanca `.env` dosyalarını, **yeni** şifre/anahtarları ve aşırı büyük
 dosyaları commit öncesinde yakalar. Mevcut IdealData bilgileri bilinçli bir
 karar olduğu için muaf tutulmuştur.
 
+## Testler
+
+```bash
+npm test
+```
+
+39 test: Python tarafı fiyatlama ve akış ayrıştırmayı (`tests/test_bridge.py`),
+Node tarafı Monte Carlo VaR çekirdeğini (`tests/test_risk.mjs`) kapsar. Ek
+bağımlılık yok — `unittest` ve `node --test` kullanılır.
+
+JS testleri sunucuyu ayağa kaldırıp `/risk-handler.js`'i gerçekten servis
+edildiği haliyle çeker; yani tarayıcıya giden kodun kendisi sınanır.
+
 ## Risk: korelasyon varsayımı
 
 Monte Carlo VaR, dayanaklar arası korelasyonu **tek faktörlü** bir modelle
