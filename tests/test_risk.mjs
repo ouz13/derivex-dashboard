@@ -193,6 +193,65 @@ test('senaryolar girdi portfoyunu degistirmez', () => {
   assert.deepEqual(PORTFOY, kopya, 'stres testi portfoyu yerinde degistirmis');
 });
 
+// --- risk raporu -----------------------------------------------------------
+
+const RAPOR_VERI = {
+  tarih: '05.10.2026 17:30', mockMu: true,
+  hold: '1', nSims: '10000', conf: 0.99, volWin: '30D RV', mult: '100', rho: '0.50',
+  portfoy: PORTFOY.map((p) => ({ ...p, expiry: '1026', delta: 0.5 })),
+  var: { portfoyDegeri: 285846.05, varAbs: -101029.1, varPct: '-35.34%',
+         cvar: -114394.1, mean: 1372.9, std: 48768.64 },
+  stres: [{ ad: 'Baz senaryo', portfoyDegeri: 285846.05, anlikEtki: 0,
+            anlikEtkiYuzde: 0, var: -101029.1, rho: 0.5 }],
+};
+
+test('rapor tum bolumleri icerir', () => {
+  const csv = kapsam._riskRaporCsv(RAPOR_VERI);
+  for (const baslik of ['Derivex Risk Raporu', 'PARAMETRELER', 'PORTFOY',
+                        'VaR SONUCLARI', 'STRES TESTI']) {
+    assert.ok(csv.includes(baslik), `${baslik} bolumu yok`);
+  }
+});
+
+test('rapor veri modunu yazar', () => {
+  assert.ok(kapsam._riskRaporCsv(RAPOR_VERI).includes('MOCK'),
+    'mock modda uretilen rapor bunu belirtmeli');
+  assert.ok(kapsam._riskRaporCsv({ ...RAPOR_VERI, mockMu: false }).includes('CANLI'));
+});
+
+test('rapor her pozisyon icin satir uretir', () => {
+  const csv = kapsam._riskRaporCsv(RAPOR_VERI);
+  for (const p of RAPOR_VERI.portfoy) {
+    assert.ok(csv.includes(p.underlying), `${p.underlying} raporda yok`);
+  }
+});
+
+test('noktali virgul ve tirnak iceren degerler kacislanir', () => {
+  const csv = kapsam._riskRaporCsv({
+    ...RAPOR_VERI,
+    stres: [{ ad: 'Kriz; sert "dusus"', portfoyDegeri: 1, anlikEtki: -2,
+              anlikEtkiYuzde: -3, var: -4, rho: 0.9 }],
+  });
+  assert.ok(csv.includes('"Kriz; sert ""dusus"""'),
+    'ayirici ve tirnak dogru kacislanmamis');
+});
+
+test('eksik bolumler raporu cokertmez', () => {
+  const csv = kapsam._riskRaporCsv({
+    tarih: 'x', mockMu: false, hold: '1', nSims: '100', conf: 0.99,
+    volWin: '30D RV', mult: '100', rho: '0.5',
+    portfoy: [], var: null, stres: null,
+  });
+  assert.ok(csv.includes('PARAMETRELER'));
+  assert.ok(!csv.includes('VaR SONUCLARI'), 'veri yokken bolum yazilmamali');
+});
+
+test('rapor satirlari ayni ayiriciyi kullanir', () => {
+  const csv = kapsam._riskRaporCsv(RAPOR_VERI);
+  const portfoySatiri = csv.split('\n').find((l) => l.startsWith('Dayanak'));
+  assert.equal(portfoySatiri.split(';').length, 8, 'portfoy basligi 8 kolon olmali');
+});
+
 test('portfoy degeri pozisyon buyuklugu ile dogrusal olcekler', () => {
   const tek = kapsam._riskSimulate(PORTFOY, { ...VARSAYILAN, nSims: 10, rho: 0.5 });
   const cift = kapsam._riskSimulate(

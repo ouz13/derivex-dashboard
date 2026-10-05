@@ -20,8 +20,12 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Uygulama bagimliliksiz calisiyor (sunucu yalnizca Node'un yerlesik
-# modullerini kullaniyor), bu yuzden npm install adimi yok.
+# Sunucunun kendisi bagimliliksiz calisiyor, ancak Risk sekmesindeki XLSX
+# portfoy ice aktarimi node_modules/xlsx dosyasini tarayiciya servis ediyor.
+# Kurulmazsa /xlsx.js 404 doner ve ice aktarma sessizce calismaz.
+COPY package*.json ./
+RUN npm install --omit=dev
+
 COPY . .
 
 # Konteyner disindan erisilebilmesi icin 127.0.0.1 yerine tum arayuzler.

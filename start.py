@@ -108,6 +108,15 @@ def on_kontrol(port):
             yaz("hata", f"{f} bulunamadi — paket eksik")
             tamam = False
 
+    # Sunucu bagimliliksiz calisir; xlsx yalnizca Risk sekmesindeki portfoy
+    # ice aktarimi icin gerekir. Eksikligi baslatmayi engellemez ama sessiz
+    # kalirsa kullanici ice aktarmanin neden calismadigini anlayamaz.
+    if os.path.isdir(os.path.join(KOK, "node_modules", "xlsx")):
+        yaz("ok", "xlsx (portfoy ice aktarimi)")
+    else:
+        yaz("bilgi", "xlsx kurulu degil — Risk sekmesinde XLSX ice aktarma calismaz")
+        yaz("bilgi", "gerekiyorsa:  npm install")
+
     if port_dolu(port):
         yaz("hata", f"port {port} kullanimda — baska bir dashboard acik olabilir")
         yaz("bilgi", f"kapatin ya da:  python3 start.py --port {port + 1}")

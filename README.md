@@ -116,6 +116,20 @@ belirgin bir sapma model ya da parametre tarafında sorun olduğuna işaret
 eder. Amerikan ile Avrupa arasındaki fark erken kullanım hakkının değeridir
 (temettüsüz call'da sıfır, faiz yüksekken derin ITM put'ta belirgin).
 
+## Risk raporu
+
+Risk sekmesindeki **Rapor İndir (CSV)** butonu portföyü, VaR sonuçlarını ve
+stres testi senaryolarını tek dosyada dışa aktarır. Rapor hangi veri modunda
+(MOCK / CANLI) üretildiğini başına yazar.
+
+Biçim olarak CSV seçildi: XLSX kütüphanesi `node_modules`'e bağlı ve taze bir
+klonda bulunmayabiliyor; rapor üretiminin bağımlılığa takılmaması için.
+
+> **Not:** Risk sekmesindeki XLSX portföy *içe aktarımı* `npm install`
+> gerektirir. Kurulmazsa `/xlsx.js` 404 döner ve içe aktarma sessizce
+> çalışmaz; `start.py` bu durumda uyarır. Docker imajı bağımlılığı kendisi
+> kurar.
+
 ## Stres testi
 
 Risk sekmesindeki **Stres Testi** butonu portföyü yedi senaryoda yeniden
