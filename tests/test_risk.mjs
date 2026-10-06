@@ -152,16 +152,16 @@ test('stres testi her senaryo icin satir uretir', () => {
 
 test('baz senaryonun anlik etkisi sifirdir', () => {
   const s = kapsam._riskStresTest(PORTFOY, { ...VARSAYILAN, nSims: 300, rho: 0.5, conf: 0.99 });
-  assert.equal(s[0].ad, 'Baz senaryo');
+  assert.equal(s[0].ad, 'Baseline');
   assert.ok(Math.abs(s[0].anlikEtki) < 1e-6,
     `baz senaryoda sok olmamali, etki=${s[0].anlikEtki}`);
 });
 
 test('spot soku portfoy degerini delta yonunde degistirir', () => {
   const s = kapsam._riskStresTest(PORTFOY, { ...VARSAYILAN, nSims: 300, rho: 0.5, conf: 0.99 });
-  const dus10 = s.find((x) => x.ad === 'Spot -%10');
-  const dus20 = s.find((x) => x.ad === 'Spot -%20');
-  const yuk10 = s.find((x) => x.ad === 'Spot +%10');
+  const dus10 = s.find((x) => x.ad === 'Spot -10%');
+  const dus20 = s.find((x) => x.ad === 'Spot -20%');
+  const yuk10 = s.find((x) => x.ad === 'Spot +10%');
   // Portfoy net long delta: spot duserse deger azalir, yukselirse artar
   assert.ok(dus10.anlikEtki < 0, 'spot dustugunde deger artmis');
   assert.ok(yuk10.anlikEtki > 0, 'spot yukseldiginde deger azalmis');
@@ -171,8 +171,8 @@ test('spot soku portfoy degerini delta yonunde degistirir', () => {
 
 test('volatilite soku portfoy degerini degistirir', () => {
   const s = kapsam._riskStresTest(PORTFOY, { ...VARSAYILAN, nSims: 300, rho: 0.5, conf: 0.99 });
-  const v15 = s.find((x) => x.ad === 'Volatilite +%50');
-  const v2 = s.find((x) => x.ad === 'Volatilite x2');
+  const v15 = s.find((x) => x.ad === 'Volatility +50%');
+  const v2 = s.find((x) => x.ad === 'Volatility x2');
   assert.ok(Math.abs(v15.anlikEtki) > 1e-6, 'vol soku degeri hic etkilememis');
   assert.ok(Math.abs(v2.anlikEtki) > Math.abs(v15.anlikEtki),
     'vol x2 etkisi +%50 den buyuk olmali');
@@ -180,7 +180,7 @@ test('volatilite soku portfoy degerini degistirir', () => {
 
 test('kriz senaryosu en kotu VaR i uretir', () => {
   const s = kapsam._riskStresTest(PORTFOY, { ...VARSAYILAN, nSims: 3000, rho: 0.5, conf: 0.99 });
-  const kriz = s.find((x) => x.ad.startsWith('Kriz'));
+  const kriz = s.find((x) => x.ad.startsWith('Crisis'));
   const baz = s[0];
   assert.ok(kriz.var < baz.var,
     `kriz VaR'i baz senaryodan kotu olmali: ${kriz.var.toFixed(0)} vs ${baz.var.toFixed(0)}`);
@@ -201,14 +201,14 @@ const RAPOR_VERI = {
   portfoy: PORTFOY.map((p) => ({ ...p, expiry: '1026', delta: 0.5 })),
   var: { portfoyDegeri: 285846.05, varAbs: -101029.1, varPct: '-35.34%',
          cvar: -114394.1, mean: 1372.9, std: 48768.64 },
-  stres: [{ ad: 'Baz senaryo', portfoyDegeri: 285846.05, anlikEtki: 0,
+  stres: [{ ad: 'Baseline', portfoyDegeri: 285846.05, anlikEtki: 0,
             anlikEtkiYuzde: 0, var: -101029.1, rho: 0.5 }],
 };
 
 test('rapor tum bolumleri icerir', () => {
   const csv = kapsam._riskRaporCsv(RAPOR_VERI);
-  for (const baslik of ['Derivex Risk Raporu', 'PARAMETRELER', 'PORTFOY',
-                        'VaR SONUCLARI', 'STRES TESTI']) {
+  for (const baslik of ['Derivex Risk Report', 'PARAMETERS', 'PORTFOLIO',
+                        'VaR RESULTS', 'STRESS TEST']) {
     assert.ok(csv.includes(baslik), `${baslik} bolumu yok`);
   }
 });
@@ -216,7 +216,7 @@ test('rapor tum bolumleri icerir', () => {
 test('rapor veri modunu yazar', () => {
   assert.ok(kapsam._riskRaporCsv(RAPOR_VERI).includes('MOCK'),
     'mock modda uretilen rapor bunu belirtmeli');
-  assert.ok(kapsam._riskRaporCsv({ ...RAPOR_VERI, mockMu: false }).includes('CANLI'));
+  assert.ok(kapsam._riskRaporCsv({ ...RAPOR_VERI, mockMu: false }).includes('LIVE'));
 });
 
 test('rapor her pozisyon icin satir uretir', () => {
@@ -242,13 +242,13 @@ test('eksik bolumler raporu cokertmez', () => {
     volWin: '30D RV', mult: '100', rho: '0.5',
     portfoy: [], var: null, stres: null,
   });
-  assert.ok(csv.includes('PARAMETRELER'));
-  assert.ok(!csv.includes('VaR SONUCLARI'), 'veri yokken bolum yazilmamali');
+  assert.ok(csv.includes('PARAMETERS'));
+  assert.ok(!csv.includes('VaR RESULTS'), 'veri yokken bolum yazilmamali');
 });
 
 test('rapor satirlari ayni ayiriciyi kullanir', () => {
   const csv = kapsam._riskRaporCsv(RAPOR_VERI);
-  const portfoySatiri = csv.split('\n').find((l) => l.startsWith('Dayanak'));
+  const portfoySatiri = csv.split('\n').find((l) => l.startsWith('Underlying'));
   assert.equal(portfoySatiri.split(';').length, 8, 'portfoy basligi 8 kolon olmali');
 });
 

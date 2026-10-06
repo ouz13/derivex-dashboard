@@ -2,7 +2,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { DenetimIzi } = require('./audit.js');
+const { AuditTrail } = require('./audit.js');
 
 // .env dosyasini ortama yukler (mevcut degerleri ezmez).
 // Kimlik bilgileri kodda gomulu tutulmaz.
@@ -94,7 +94,7 @@ const MOCK_MODE = DATA_MODE === 0;
 
 // Degistirilemez denetim izi: fiyatlama ve risk koşuları zincirlenmiş
 // kayıtlara yazılır, geçmişe müdahale doğrulamada yakalanır.
-const denetimIzi = new DenetimIzi(path.join(__dirname, 'audit-log.jsonl'));
+const auditTrail = new AuditTrail(path.join(__dirname, 'audit-log.jsonl'));
 
 const serverState = {
   spotByTicker: {},
@@ -317,8 +317,8 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
     ${MOCK_MODE ? `<div data-mock-banner style="background:#b42318;color:#fff;padding:7px 14px;margin:-10px -16px 10px -16px;
          font-weight:700;font-size:13px;display:flex;gap:10px;align-items:center;">
       <span style="font-size:15px;">&#9888;</span>
-      MOCK VERİ — bu ekrandaki sayılar üretilmiştir, piyasa verisi değildir.
-      <span style="font-weight:400;opacity:.85;">Canlı veri için: DATA_MODE=1</span>
+      MOCK DATA — the figures on this screen are generated, not market data.
+      <span style="font-weight:400;opacity:.85;">For live data: DATA_MODE=1</span>
     </div>` : ''}
     <div class="top-title">
       <span class="dot"></span>
@@ -2883,8 +2883,8 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
           if (mc) mc.style.display = '';
           var st = document.getElementById('riskStatus');
           if (st) {
-            st.textContent = poz.length + ' ornek pozisyon yuklendi (MOCK VERI) — '
-              + 'parametreleri ayarlayip Run VaR Simulation calistirin.';
+            st.textContent = poz.length + ' sample position(s) loaded (MOCK DATA) — '
+              + 'adjust parameters and click Run VaR Simulation.';
           }
         })
         .catch(function () { /* canli mod ya da uc kapali: sessiz gec */ });
@@ -2899,15 +2899,15 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
       fetch('/api/audit/verify')
         .then(function (r) { return r.json(); })
         .then(function (d) {
-          if (d && d.gecerli) {
-            el.textContent = d.kayitSayisi + ' kayıt · zincir bütün';
+          if (d && d.valid) {
+            el.textContent = d.recordCount + ' record(s) · chain intact';
             el.style.color = '#16a34a';
           } else {
-            el.textContent = (d && d.hata) ? ('BOZUK — ' + d.hata) : 'doğrulanamadı';
+            el.textContent = (d && d.error) ? ('TAMPERED — ' + d.error) : 'could not verify';
             el.style.color = '#dc2626';
           }
         })
-        .catch(function () { el.textContent = 'erişilemedi'; el.style.color = '#dc2626'; });
+        .catch(function () { el.textContent = 'unreachable'; el.style.color = '#dc2626'; });
     }
     window.denetimDogrula = denetimDurumGoster;
 
@@ -3317,25 +3317,25 @@ function toolsContent(toolsTab) {
             <div><div class="field-label">Confidence Level</div><select class="field-input field-editable" id="riskMcConf" style="width:80px;"><option value="0.95">95%</option><option value="0.99" selected>99%</option></select></div>
             <div><div class="field-label">Vol Window</div><select class="field-input field-editable" id="riskMcVolWin" style="width:90px;"><option value="15">15D RV</option><option value="30" selected>30D RV</option><option value="60">60D RV</option><option value="90">90D RV</option></select></div>
             <div><div class="field-label">Contract Multiplier</div><input class="field-input field-editable" id="riskMcMult" type="number" value="100" min="1" step="1" style="width:90px;" /></div>
-            <div><div class="field-label" title="Dayanaklar arasi ortalama korelasyon. 0 = bagimsiz, 1 = tam birlikte hareket.">Correlation (&rho;)</div><input class="field-input field-editable" id="riskMcRho" type="number" value="0.50" min="0" max="0.99" step="0.05" style="width:95px;" /></div>
+            <div><div class="field-label" title="Average correlation across underlyings. 0 = independent, 1 = perfectly correlated.">Correlation (&rho;)</div><input class="field-input field-editable" id="riskMcRho" type="number" value="0.50" min="0" max="0.99" step="0.05" style="width:95px;" /></div>
             <button class="action-btn" type="button" onclick="riskRunMC()" style="align-self:flex-end;">Run VaR Simulation</button>
-            <button class="action-btn" type="button" onclick="riskRunStres()" style="align-self:flex-end;">Stres Testi</button>
-            <button class="action-btn" type="button" onclick="riskRaporIndir()" style="align-self:flex-end;">Rapor İndir (CSV)</button>
+            <button class="action-btn" type="button" onclick="riskRunStres()" style="align-self:flex-end;">Stress Test</button>
+            <button class="action-btn" type="button" onclick="riskRaporIndir()" style="align-self:flex-end;">Download Report (CSV)</button>
           </div>
           <div style="margin-top:14px;border-top:1px solid #e2e8f0;padding-top:10px;display:flex;gap:12px;align-items:center;font-size:12px;">
-            <span style="font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">Denetim İzi</span>
-            <span id="denetimDurum" style="color:#64748b;">yükleniyor…</span>
-            <button class="action-btn" type="button" onclick="denetimDogrula()" style="padding:3px 10px;font-size:11px;">Bütünlüğü Doğrula</button>
+            <span style="font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">Audit Trail</span>
+            <span id="denetimDurum" style="color:#64748b;">loading…</span>
+            <button class="action-btn" type="button" onclick="denetimDogrula()" style="padding:3px 10px;font-size:11px;">Verify Integrity</button>
           </div>
           <div id="riskStresWrap" style="display:none;margin-top:14px;">
-            <div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Stres Testi — Senaryo Analizi</div>
+            <div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Stress Test — Scenario Analysis</div>
             <table style="width:100%;border-collapse:collapse;font-size:12px;">
               <thead>
                 <tr style="background:#0f1728;color:#fff;">
-                  <th style="padding:5px 10px;text-align:left;">Senaryo</th>
-                  <th style="padding:5px 10px;text-align:right;">Portföy Değeri</th>
-                  <th style="padding:5px 10px;text-align:right;">Anlık Etki</th>
-                  <th style="padding:5px 10px;text-align:right;">Anlık Etki %</th>
+                  <th style="padding:5px 10px;text-align:left;">Scenario</th>
+                  <th style="padding:5px 10px;text-align:right;">Portfolio Value</th>
+                  <th style="padding:5px 10px;text-align:right;">Immediate Impact</th>
+                  <th style="padding:5px 10px;text-align:right;">Impact %</th>
                   <th style="padding:5px 10px;text-align:right;">VaR</th>
                 </tr>
               </thead>
@@ -3468,13 +3468,13 @@ function toolsContent(toolsTab) {
           </div>
           <div style="margin-top:14px;border-top:1px solid #e2e8f0;padding-top:12px;">
             <div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">
-              Yöntem Karşılaştırması (Binom Ağacı, 300 adım)
+              Method Comparison (Binomial Tree, 300 steps)
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;">
-              <div><div class="field-label">Binom (Avrupa)</div><input class="field-output field-readonly" id="prcBinEu" readonly /></div>
-              <div><div class="field-label">Binom (Amerikan)</div><input class="field-output field-readonly" id="prcBinAm" readonly /></div>
-              <div><div class="field-label" title="Binom Avrupa ile Black-Scholes arasındaki sapma. Büyük bir fark model ya da parametre sorununa işaret eder.">BS'den Sapma</div><input class="field-output field-readonly" id="prcBinDiff" readonly /></div>
-              <div><div class="field-label" title="Amerikan ile Avrupa arasındaki fark: erken kullanım hakkının değeri.">Erken Kullanım Primi</div><input class="field-output field-readonly" id="prcEarlyEx" readonly /></div>
+              <div><div class="field-label">Binomial (European)</div><input class="field-output field-readonly" id="prcBinEu" readonly /></div>
+              <div><div class="field-label">Binomial (American)</div><input class="field-output field-readonly" id="prcBinAm" readonly /></div>
+              <div><div class="field-label" title="Deviation between binomial European and Black-Scholes. A large gap points to a model or parameter problem.">Deviation from BS</div><input class="field-output field-readonly" id="prcBinDiff" readonly /></div>
+              <div><div class="field-label" title="Difference between American and European: the value of the early exercise right.">Early Exercise Premium</div><input class="field-output field-readonly" id="prcEarlyEx" readonly /></div>
             </div>
           </div>
         </div>
@@ -4174,13 +4174,13 @@ const server = http.createServer(async (req, res) => {
       '// Tek bir VaR sayisi "ne olursa ne olur" sorusunu cevaplamaz; bu',
       '// katman onu tamamlar.',
       'window.RISK_SENARYOLAR = [',
-      '  { ad: "Baz senaryo",        spotSok: 0,     volCarpan: 1.0, rho: null },',
-      '  { ad: "Spot -%10",          spotSok: -0.10, volCarpan: 1.0, rho: null },',
-      '  { ad: "Spot -%20",          spotSok: -0.20, volCarpan: 1.0, rho: null },',
-      '  { ad: "Spot +%10",          spotSok:  0.10, volCarpan: 1.0, rho: null },',
-      '  { ad: "Volatilite +%50",    spotSok: 0,     volCarpan: 1.5, rho: null },',
-      '  { ad: "Volatilite x2",      spotSok: 0,     volCarpan: 2.0, rho: null },',
-      '  { ad: "Kriz: -%20, vol x2", spotSok: -0.20, volCarpan: 2.0, rho: 0.95 }',
+      '  { ad: "Baseline",            spotSok: 0,     volCarpan: 1.0, rho: null },',
+      '  { ad: "Spot -10%",           spotSok: -0.10, volCarpan: 1.0, rho: null },',
+      '  { ad: "Spot -20%",           spotSok: -0.20, volCarpan: 1.0, rho: null },',
+      '  { ad: "Spot +10%",           spotSok:  0.10, volCarpan: 1.0, rho: null },',
+      '  { ad: "Volatility +50%",     spotSok: 0,     volCarpan: 1.5, rho: null },',
+      '  { ad: "Volatility x2",       spotSok: 0,     volCarpan: 2.0, rho: null },',
+      '  { ad: "Crisis: -20%, vol x2", spotSok: -0.20, volCarpan: 2.0, rho: 0.95 }',
       '];',
       '',
       'window._riskStresTest = function(portfolio, opts, senaryolar) {',
@@ -4277,23 +4277,23 @@ const server = http.createServer(async (req, res) => {
       '  var sat = [];',
       '  var ekle = function(dizi) { sat.push(dizi.map(window._csvKacis).join(";")); };',
       '',
-      '  ekle(["Derivex Risk Raporu"]);',
-      '  ekle(["Olusturulma", veri.tarih || ""]);',
-      '  ekle(["Veri modu", veri.mockMu ? "MOCK (uretilmis veri)" : "CANLI"]);',
+      '  ekle(["Derivex Risk Report"]);',
+      '  ekle(["Generated", veri.tarih || ""]);',
+      '  ekle(["Data mode", veri.mockMu ? "MOCK (generated data)" : "LIVE"]);',
       '  sat.push("");',
       '',
-      '  ekle(["PARAMETRELER"]);',
-      '  ekle(["Elde tutma (gun)", veri.hold]);',
-      '  ekle(["Simulasyon sayisi", veri.nSims]);',
-      '  ekle(["Guven seviyesi", (veri.conf*100).toFixed(0) + "%"]);',
-      '  ekle(["Volatilite penceresi", veri.volWin]);',
-      '  ekle(["Kontrat carpani", veri.mult]);',
-      '  ekle(["Korelasyon (rho)", veri.rho]);',
+      '  ekle(["PARAMETERS"]);',
+      '  ekle(["Holding period (days)", veri.hold]);',
+      '  ekle(["Simulations", veri.nSims]);',
+      '  ekle(["Confidence level", (veri.conf*100).toFixed(0) + "%"]);',
+      '  ekle(["Vol window", veri.volWin]);',
+      '  ekle(["Contract multiplier", veri.mult]);',
+      '  ekle(["Correlation (rho)", veri.rho]);',
       '  sat.push("");',
       '',
       '  if (veri.portfoy && veri.portfoy.length) {',
-      '    ekle(["PORTFOY"]);',
-      '    ekle(["Dayanak","Tip","Kullanim","Vade","DTM","Spot","Adet","Delta"]);',
+      '    ekle(["PORTFOLIO"]);',
+      '    ekle(["Underlying","Type","Strike","Expiry","DTM","Spot","Qty","Delta"]);',
       '    veri.portfoy.forEach(function(p) {',
       '      ekle([p.underlying, p.posType, p.strike, p.expiry, p.dtm, p.spot, p.qty, p.delta]);',
       '    });',
@@ -4301,20 +4301,20 @@ const server = http.createServer(async (req, res) => {
       '  }',
       '',
       '  if (veri.var) {',
-      '    ekle(["VaR SONUCLARI"]);',
-      '    ekle(["Metrik","Deger"]);',
-      '    ekle(["Portfoy degeri", veri.var.portfoyDegeri]);',
-      '    ekle(["VaR (mutlak)", veri.var.varAbs]);',
+      '    ekle(["VaR RESULTS"]);',
+      '    ekle(["Metric","Value"]);',
+      '    ekle(["Portfolio value", veri.var.portfoyDegeri]);',
+      '    ekle(["VaR (absolute)", veri.var.varAbs]);',
       '    ekle(["VaR (%)", veri.var.varPct]);',
       '    ekle(["CVaR (ES)", veri.var.cvar]);',
-      '    ekle(["Ortalama K/Z", veri.var.mean]);',
-      '    ekle(["Std sapma K/Z", veri.var.std]);',
+      '    ekle(["Mean P&L", veri.var.mean]);',
+      '    ekle(["Std dev P&L", veri.var.std]);',
       '    sat.push("");',
       '  }',
       '',
       '  if (veri.stres && veri.stres.length) {',
-      '    ekle(["STRES TESTI"]);',
-      '    ekle(["Senaryo","Portfoy degeri","Anlik etki","Anlik etki %","VaR","Rho"]);',
+      '    ekle(["STRESS TEST"]);',
+      '    ekle(["Scenario","Portfolio value","Immediate impact","Impact %","VaR","Rho"]);',
       '    veri.stres.forEach(function(r) {',
       '      ekle([r.ad, r.portfoyDegeri, r.anlikEtki,',
       '            r.anlikEtkiYuzde === null ? "" : r.anlikEtkiYuzde, r.var, r.rho]);',
@@ -4326,7 +4326,7 @@ const server = http.createServer(async (req, res) => {
       '',
       'window.riskRaporIndir = function() {',
       '  var portfoy = window._riskPortfolio || [];',
-      '  if (!portfoy.length) { alert("Once portfoy yukleyin."); return; }',
+      '  if (!portfoy.length) { alert("Load a portfolio first."); return; }',
       '  var deger = function(id) { var e=document.getElementById(id); return e ? e.value : ""; };',
       '  var sayi  = function(id) { var v=parseFloat(deger(id)); return isNaN(v) ? null : v; };',
       '',
@@ -4360,7 +4360,7 @@ const server = http.createServer(async (req, res) => {
       '',
       'window.riskRunStres = function() {',
       '  var portfolio=window._riskPortfolio||[];',
-      '  if (!portfolio.length) { alert("Once portfoy yukleyin."); return; }',
+      '  if (!portfolio.length) { alert("Load a portfolio first."); return; }',
       '  var hold   = parseInt((document.getElementById("riskMcHold")||{value:1}).value,10)||1;',
       '  var nSims  = parseInt((document.getElementById("riskMcSims")||{value:10000}).value,10)||10000;',
       '  var conf   = parseFloat((document.getElementById("riskMcConf")||{value:0.99}).value)||0.99;',
@@ -4369,7 +4369,7 @@ const server = http.createServer(async (req, res) => {
       '  var rhoIn  = parseFloat((document.getElementById("riskMcRho")||{value:0.5}).value);',
       '  var rho    = isNaN(rhoIn) ? 0.5 : Math.max(0, Math.min(0.99, rhoIn));',
       '  var statusEl=document.getElementById("riskStatus");',
-      '  if (statusEl) statusEl.textContent="Stres senaryolari calistiriliyor...";',
+      '  if (statusEl) statusEl.textContent="Running stress scenarios...";',
       '',
       '  window._riskPiyasaVerisi(volWin, function(volMap, rateMap) {',
       '    setTimeout(function() {',
@@ -4402,7 +4402,7 @@ const server = http.createServer(async (req, res) => {
       '      }',
       '      var w=document.getElementById("riskStresWrap");',
       '      if (w) w.style.display="";',
-      '      if (statusEl) statusEl.textContent="Stres testi tamam. "+sonuc.length+" senaryo, "+nSims.toLocaleString()+" yol.";',
+      '      if (statusEl) statusEl.textContent="Stress test done. "+sonuc.length+" scenarios, "+nSims.toLocaleString()+" paths.";',
       '    }, 20);',
       '  });',
       '};',
@@ -4812,16 +4812,16 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
       ok: true,
-      toplam: denetimIzi.kayitlar.length,
-      dogrulama: denetimIzi.dogrula(),
-      kayitlar: denetimIzi.son(n),
+      total: auditTrail.records.length,
+      verification: auditTrail.verify(),
+      records: auditTrail.recent(n),
     }));
     return;
   }
 
   if (url.pathname === '/api/audit/verify' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ ok: true, ...denetimIzi.dogrula() }));
+    res.end(JSON.stringify({ ok: true, ...auditTrail.verify() }));
     return;
   }
 
@@ -4833,17 +4833,17 @@ const server = http.createServer(async (req, res) => {
         const p = JSON.parse(body || '{}');
         if (!p.tip) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: false, error: 'tip alani zorunlu' }));
+          res.end(JSON.stringify({ ok: false, error: 'type field is required' }));
           return;
         }
         // Veri modu kayda gömülür: üretilmiş veriyle yapılan bir koşunun
         // sonradan canlı sanılmaması için.
-        const kayit = denetimIzi.ekle(p.tip, { ...(p.veri || {}), mod: MOCK_MODE ? 'MOCK' : 'CANLI' });
+        const record = auditTrail.append(p.tip, { ...(p.veri || {}), mod: MOCK_MODE ? 'MOCK' : 'CANLI' });
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: true, seq: kayit.seq, ozet: kayit.ozet }));
+        res.end(JSON.stringify({ ok: true, seq: record.seq, hash: record.hash }));
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: false, error: 'gecersiz json' }));
+        res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
       }
     });
     return;

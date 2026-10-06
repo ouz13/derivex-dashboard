@@ -15,104 +15,104 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const BASLANGIC_OZET = '0'.repeat(64);   // zincirin kökü
+const GENESIS_HASH = '0'.repeat(64);   // zincirin kökü
 
 /**
  * Bir kaydın özetini hesaplar.
  *
  * Alanlar sabit bir sırayla birleştirilir: JSON.stringify anahtar sırasını
- * koruduğu için aynı veri her zaman aynı özeti üretir, ama sıraya güvenmek
+ * koruduğu için aynı data her zaman aynı özeti üretir, ama sıraya güvenmek
  * kırılgan olurdu — bu yüzden alanlar tek tek ve açıkça yazılır.
  */
-function ozetHesapla(kayit) {
-  const girdi = [
-    String(kayit.seq),
-    kayit.ts,
-    kayit.tip,
-    JSON.stringify(kayit.veri === undefined ? null : kayit.veri),
-    kayit.oncekiOzet,
+function computeHash(record) {
+  const input = [
+    String(record.seq),
+    record.ts,
+    record.type,
+    JSON.stringify(record.data === undefined ? null : record.data),
+    record.prevHash,
   ].join('\u0000');
-  return crypto.createHash('sha256').update(girdi, 'utf8').digest('hex');
+  return crypto.createHash('sha256').update(input, 'utf8').digest('hex');
 }
 
-class DenetimIzi {
-  constructor(dosyaYolu) {
-    this.dosya = dosyaYolu;
-    this.kayitlar = [];
-    this._yukle();
+class AuditTrail {
+  constructor(filePath) {
+    this.file = filePath;
+    this.records = [];
+    this._load();
   }
 
-  _yukle() {
-    if (!fs.existsSync(this.dosya)) return;
-    const satirlar = fs.readFileSync(this.dosya, 'utf8').split('\n');
-    for (const s of satirlar) {
+  _load() {
+    if (!fs.existsSync(this.file)) return;
+    const lines = fs.readFileSync(this.file, 'utf8').split('\n');
+    for (const s of lines) {
       const t = s.trim();
       if (!t) continue;
       try {
-        this.kayitlar.push(JSON.parse(t));
+        this.records.push(JSON.parse(t));
       } catch {
-        // Bozuk satır atlanır; dogrula() bunu zincir kopukluğu olarak bildirir.
+        // Bozuk satır atlanır; verify() bunu zincir kopukluğu olarak bildirir.
       }
     }
   }
 
-  get sonOzet() {
-    return this.kayitlar.length
-      ? this.kayitlar[this.kayitlar.length - 1].ozet
-      : BASLANGIC_OZET;
+  get lastHash() {
+    return this.records.length
+      ? this.records[this.records.length - 1].hash
+      : GENESIS_HASH;
   }
 
   /** Zincire yeni kayıt ekler ve eklenen kaydı döndürür. */
-  ekle(tip, veri) {
-    const kayit = {
-      seq: this.kayitlar.length + 1,
+  append(type, data) {
+    const record = {
+      seq: this.records.length + 1,
       ts: new Date().toISOString(),
-      tip: String(tip),
-      veri: veri === undefined ? null : veri,
-      oncekiOzet: this.sonOzet,
+      type: String(type),
+      data: data === undefined ? null : data,
+      prevHash: this.lastHash,
     };
-    kayit.ozet = ozetHesapla(kayit);
-    this.kayitlar.push(kayit);
+    record.hash = computeHash(record);
+    this.records.push(record);
     try {
-      fs.appendFileSync(this.dosya, JSON.stringify(kayit) + '\n', 'utf8');
+      fs.appendFileSync(this.file, JSON.stringify(record) + '\n', 'utf8');
     } catch (e) {
-      // Diske yazılamazsa bellekteki zincir ile dosya ayrışır; bunu
+      // Diske yazılamazsa bellekteki zincir ile file ayrışır; bunu
       // sessizce yutmak denetim izinin amacına aykırı olurdu.
-      kayit.diskHatasi = String(e && e.message);
+      record.diskError = String(e && e.message);
     }
-    return kayit;
+    return record;
   }
 
   /**
    * Zinciri baştan sona doğrular.
-   * Döndürür: { gecerli, kayitSayisi, hata? }
+   * Döndürür: { valid, recordCount, error? }
    */
-  dogrula() {
-    let beklenenOncekiOzet = BASLANGIC_OZET;
-    for (let i = 0; i < this.kayitlar.length; i++) {
-      const k = this.kayitlar[i];
+  verify() {
+    let expectedPrevHash = GENESIS_HASH;
+    for (let i = 0; i < this.records.length; i++) {
+      const k = this.records[i];
 
       if (k.seq !== i + 1) {
-        return { gecerli: false, kayitSayisi: this.kayitlar.length,
-                 hata: `sira numarasi atlamis: ${i + 1} beklenirken ${k.seq}` };
+        return { valid: false, recordCount: this.records.length,
+                 error: `sequence gap: expected ${i + 1}, found ${k.seq}` };
       }
-      if (k.oncekiOzet !== beklenenOncekiOzet) {
-        return { gecerli: false, kayitSayisi: this.kayitlar.length,
-                 hata: `zincir kopuk: kayit ${k.seq} onceki ozete baglanmiyor` };
+      if (k.prevHash !== expectedPrevHash) {
+        return { valid: false, recordCount: this.records.length,
+                 error: `broken chain: record ${k.seq} does not link to the previous hash` };
       }
-      if (ozetHesapla(k) !== k.ozet) {
-        return { gecerli: false, kayitSayisi: this.kayitlar.length,
-                 hata: `kayit ${k.seq} degistirilmis: ozet tutmuyor` };
+      if (computeHash(k) !== k.hash) {
+        return { valid: false, recordCount: this.records.length,
+                 error: `record ${k.seq} tampered: hash mismatch` };
       }
-      beklenenOncekiOzet = k.ozet;
+      expectedPrevHash = k.hash;
     }
-    return { gecerli: true, kayitSayisi: this.kayitlar.length };
+    return { valid: true, recordCount: this.records.length };
   }
 
   /** Son n kaydı döndürür (varsayılan 50). */
-  son(n = 50) {
-    return this.kayitlar.slice(-n);
+  recent(n = 50) {
+    return this.records.slice(-n);
   }
 }
 
-module.exports = { DenetimIzi, ozetHesapla, BASLANGIC_OZET };
+module.exports = { AuditTrail, computeHash, GENESIS_HASH };
