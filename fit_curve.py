@@ -77,6 +77,18 @@ def bir_tur(sessiz=False):
         "gecerli_azami_gun": round(tavan),
         "en_uzun_gozlem_gun": round(en_uzun_gun),
     }
+    # Parametre surumu: her uydurma depoya YENI satir olarak yazilir,
+    # ustune yazilmaz. "Bu opsiyon hangi egriyle fiyatlandi" sorusu ancak
+    # eski surumler dururken cevaplanabilir. Depo yoksa uydurma yine
+    # gonderilir — surumleme bir yan kayit, akisin sarti degil.
+    try:
+        import store
+        d = store.depo()
+        if d is not None:
+            d.model_surum_yaz("nss", fit, fit_quality=fit.get("rmse"), meta=yuk)
+    except Exception as e:
+        print(f"[EGRI] surum yazilamadi: {type(e).__name__}: {e}")
+
     try:
         requests.post(f"{FRONTEND}/api/yield-curve", json=yuk, timeout=5).raise_for_status()
     except Exception as e:

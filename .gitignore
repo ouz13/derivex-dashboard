@@ -16,3 +16,11 @@ __pycache__/
 # Isletim sistemi
 .DS_Store
 audit-log.jsonl
+
+# SQLite deposu ve ondan uretilenler. Veritabani calisma zamani durumudur:
+# makineye ozgu, mock/canli modu tasir ve hizla buyur. Commit edilmesi,
+# klonlayan herkese baskasinin fiyat gecmisini dagitmak olur.
+*.db
+*.db-wal
+*.db-shm
+garch_forecasts_store.json

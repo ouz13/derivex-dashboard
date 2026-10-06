@@ -701,22 +701,85 @@ def connect_and_login(max_login_retries: int = 6, retry_wait_seconds: float = 5.
 
 
 # --- Frontend POST helpers (same contracts as bridge_http.py) ---
+#
+# KALICILIK
+# Bu uc islev, hem canli koprunun hem mock_feed.py'nin yayin yaptigi tek
+# gecittir. Depoyu buraya baglamak, iki modun da hicbir sey bilmeden
+# kalici hale gelmesini sagliyor. Depo bir yan kayittir: acilamazsa ya da
+# yazamazsa akis depo olmadan surer, POST yolu etkilenmez.
+
+# Anlik goruntu yazma araligi. Her yazim tum opsiyon zincirini JSON olarak
+# yeniden yazdigi icin WAL'i hizla buyutuyordu; 2 dakika, yeniden baslatmada
+# en fazla 2 dakikalik tazelik kaybi demek — akis zaten saniyeler icinde
+# uzerine yaziyor.
+_SNAP_ARALIK = float(os.environ.get("STORE_SNAPSHOT_SEC", "120"))
+_snap_spot = {}
+_snap_oranlar = None
+_snap_opsiyonlar = {}
+_snap_son_yazim = 0.0
+
+
+def _depo():
+    """Depoyu tembel yukler. store.py yoksa veya kapaliysa None doner."""
+    try:
+        import store
+        return store.depo()
+    except Exception:
+        return None
+
+
+def _snapshot_bastir(zorla=False):
+    """
+    Birikmis tam durumu araliklı olarak yazar.
+
+    Tick tablolarindan ayri tutuluyor: tick'ler gecmis seri icin,
+    anlik goruntu ise yeniden baslatmada arayuzu tek seferde doldurmak
+    icin. Canli modda seans disinda hic tick gelmedigi halde ekranin dolu
+    acilmasi buna bagli.
+    """
+    global _snap_son_yazim
+    d = _depo()
+    if d is None:
+        return
+    simdi = time.time()
+    if not zorla and (simdi - _snap_son_yazim) < _SNAP_ARALIK:
+        return
+    _snap_son_yazim = simdi
+    if _snap_spot:
+        d.snapshot_yaz("spot", _snap_spot)
+    if _snap_oranlar:
+        d.snapshot_yaz("rates", _snap_oranlar)
+    if _snap_opsiyonlar:
+        d.snapshot_yaz("options", _snap_opsiyonlar)
+
 
 def post_spot_mid(ticker: str, spot_mid: float, ts: str):
     payload = {"ticker": ticker, "spot_mid": float(spot_mid), "ts": ts}
     r = requests.post(FRONTEND_SPOT_ENDPOINT, json=payload, timeout=2)
     r.raise_for_status()
+    _snap_spot[ticker] = float(spot_mid)
+    d = _depo()
+    if d is not None:
+        d.spot_kaydet(ticker, spot_mid)
+    _snapshot_bastir()
     return r.json()
 
 
 def post_futures_rates_batch(rates_by_ticker: dict, maturities: list, ts: str):
+    global _snap_oranlar
+    vadeler = [{"code": m["code"], "label": m["label"], "dtm": m["dtm"]} for m in maturities]
     payload = {
         "rates_by_ticker": rates_by_ticker,
-        "maturities": [{"code": m["code"], "label": m["label"], "dtm": m["dtm"]} for m in maturities],
+        "maturities": vadeler,
         "ts": ts,
     }
     r = requests.post(FRONTEND_FUTURES_RATES_ENDPOINT, json=payload, timeout=3)
     r.raise_for_status()
+    _snap_oranlar = {"rates_by_ticker": rates_by_ticker, "maturities": vadeler}
+    d = _depo()
+    if d is not None:
+        d.oranlar_kaydet(rates_by_ticker, maturities)
+    _snapshot_bastir()
     return r.json()
 
 
@@ -724,6 +787,11 @@ def post_options_chain(ticker: str, options: list, ts: str):
     payload = {"ticker": ticker, "options": options, "ts": ts}
     r = requests.post(FRONTEND_OPTIONS_CHAIN_ENDPOINT, json=payload, timeout=3)
     r.raise_for_status()
+    _snap_opsiyonlar[ticker] = options
+    d = _depo()
+    if d is not None:
+        d.opsiyonlar_kaydet(ticker, options)
+    _snapshot_bastir()
     return r.json()
 
 
@@ -930,8 +998,22 @@ def run_combined_bridge(run_seconds=RUN_SECONDS, post_interval_sec=2.0):
             except Exception:
                 pass
 
+    # Kapanista anlik goruntuyu zorla yaz: bir sonraki acilista arayuz
+    # ilk tick'i beklemeden dolu gelsin.
+    try:
+        _snapshot_bastir(zorla=True)
+    except Exception:
+        pass
+
     print("[SUMMARY]")
     print(f"spot_posts={spot_posted}  rates_posts={rates_post_count}  opts_posts={options_post_count}")
+    d = _depo()
+    if d is not None:
+        i = d.istatistik()
+        print(f"store: spot_ticks={i['spot_ticks']}  days={i['spot_days']}  "
+              f"opt_quotes={i['option_quotes']}  mode={i['data_mode']}")
+        if i["write_error"]:
+            print(f"store: YAZMA HATASI — {i['write_error']}")
 
 
 if __name__ == "__main__":

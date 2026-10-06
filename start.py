@@ -73,7 +73,7 @@ def kapat_hepsi(*_):
 # ---------------------------------------------------------------- 1) kontrol
 
 def on_kontrol(port):
-    baslik("1/4  On kontroller")
+    baslik("1/5  On kontroller")
     tamam = True
 
     if sys.version_info < (3, 8):
@@ -130,7 +130,7 @@ def on_kontrol(port):
 # ---------------------------------------------------------------- 2) veri testi
 
 def veri_testi():
-    baslik("2/4  Veri erisimi")
+    baslik("2/5  Veri erisimi")
     probe = os.path.join(KOK, "idealdata_probe.py")
     if not os.path.isfile(probe):
         yaz("bilgi", "idealdata_probe.py yok, test atlandi")
@@ -164,7 +164,7 @@ def veri_testi():
 # ---------------------------------------------------------------- 3) dashboard
 
 def dashboard_baslat(port):
-    baslik("3/4  Dashboard sunucusu")
+    baslik("3/5  Dashboard sunucusu")
     log = open(os.path.join(KOK, "dashboard.log"), "w")
     ortam = dict(os.environ, PORT=str(port))
     p = subprocess.Popen(["node", "_frontend_runtime.js"], cwd=KOK,
@@ -184,10 +184,93 @@ def dashboard_baslat(port):
     return False
 
 
-# ---------------------------------------------------------------- 4) kopru
+# ---------------------------------------------------------------- 4) kalicilik
+
+def kalicilik(port):
+    """
+    Depoyu hazirlar ve en son anlik goruntuyu arayuze geri yukler.
+
+    Veri koprusunden ONCE calisir: boylece arayuz ilk tick'i beklemeden
+    dolu aciliyor. Canli modda seans disinda hic tick gelmeyecegi icin bu
+    adim olmadan ekran bos kalirdi.
+    """
+    baslik("4/5  Kalicilik (SQLite)")
+    if not os.path.isfile(os.path.join(KOK, "store.py")):
+        yaz("bilgi", "store.py yok — kalicilik atlandi")
+        return
+
+    ortam = dict(os.environ,
+                 FRONTEND_BASE_URL=f"http://127.0.0.1:{port}",
+                 DATA_MODE=str(DATA_MODE))
+
+    try:
+        r = subprocess.run([sys.executable, "store.py", "--stats"],
+                           capture_output=True, text=True, timeout=30, cwd=KOK, env=ortam)
+        if r.returncode != 0:
+            yaz("hata", "depo acilamadi — kalicilik devre disi")
+            for ln in (r.stderr or "").strip().splitlines()[-3:]:
+                print("         " + ln, flush=True)
+            return
+        import json as _json
+        i = _json.loads(r.stdout)
+        yaz("ok", f"veritabani: {os.path.basename(i['db_path'])} "
+                  f"({i['db_bytes'] / 1048576:.2f} MB, mod {i['data_mode']})")
+        yaz("bilgi", f"gunluk bar: {i['spot_days']}  ticker: {i['spot_tickers']}  "
+                     f"model surumu: {i['model_versions']}")
+    except Exception as e:
+        yaz("hata", f"depo kontrolu basarisiz: {type(e).__name__}: {e}")
+        return
+
+    # Geri yukleme: snapshot'i akisin kullandigi ayni POST uclarina gonderir.
+    try:
+        r = subprocess.run([sys.executable, "store.py", "--restore"],
+                           capture_output=True, text=True, timeout=120, cwd=KOK, env=ortam)
+        satir = next((ln for ln in r.stdout.splitlines() if "geri yukleme" in ln), None)
+        if satir and "spot=0 oranlar=0 opsiyon_ticker=0" not in satir:
+            yaz("ok", satir.replace("[STORE] ", ""))
+        else:
+            yaz("bilgi", "geri yuklenecek anlik goruntu yok (ilk calistirma)")
+    except Exception as e:
+        yaz("bilgi", f"geri yukleme atlandi: {type(e).__name__}")
+
+    _stats_gonder(port)
+
+
+def _stats_gonder(port):
+    """Depo ozetini arayuz paneline gonderir. Sessiz: panel kozmetiktir."""
+    try:
+        subprocess.run([sys.executable, "store.py", "--push-stats"],
+                       capture_output=True, text=True, timeout=30, cwd=KOK,
+                       env=dict(os.environ,
+                                FRONTEND_BASE_URL=f"http://127.0.0.1:{port}",
+                                DATA_MODE=str(DATA_MODE)))
+    except Exception:
+        pass
+
+
+def _garch_yenile(port):
+    """
+    Depodaki gunluk kapanislardan GARCH/RV tahminini yeniden hesaplar.
+
+    Beklenmez: izleme dongusunu tutmamasi icin arka planda birakilir.
+    Yeterli gecmis yoksa garch.py kendisi erken cikar ve duragan tahmin
+    dosyasini oldugu gibi birakir.
+    """
+    if not os.path.isfile(os.path.join(KOK, "garch.py")):
+        return
+    try:
+        log = open(os.path.join(KOK, "store.log"), "a")
+        subprocess.Popen([sys.executable, "-u", "garch.py"], cwd=KOK,
+                         stdout=log, stderr=subprocess.STDOUT,
+                         env=dict(os.environ, DATA_MODE=str(DATA_MODE)))
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------- 5) kopru
 
 def kopru_baslat(port):
-    baslik("4/4  Veri kaynagi")
+    baslik("5/5  Veri kaynagi")
     script = "mock_feed.py" if MOCK_MODE else "bridge_stream.py"
     log_yolu = os.path.join(KOK, "bridge.log")
     log = open(log_yolu, "w")
@@ -242,13 +325,25 @@ def izle(port):
     print(f"   CALISIYOR   ->   http://127.0.0.1:{port}")
     print("  " + "=" * 56)
     print("   Durdurmak icin Ctrl+C")
-    print("   Kayitlar: dashboard.log, bridge.log\n", flush=True)
+    print("   Kayitlar: dashboard.log, bridge.log, store.log\n", flush=True)
 
     log_yolu = os.path.join(KOK, "bridge.log")
     son = ""
     kopru_uyarildi = False
+    # Depo bakimi: panel ozeti sik, GARCH yeniden uydurma seyrek.
+    STATS_ARALIK = 60.0
+    GARCH_ARALIK = float(os.environ.get("GARCH_REFRESH_SEC", "900"))
+    son_stats = time.time()
+    son_garch = time.time()
     while True:
         time.sleep(5)
+        simdi = time.time()
+        if simdi - son_stats >= STATS_ARALIK:
+            son_stats = simdi
+            _stats_gonder(port)
+        if simdi - son_garch >= GARCH_ARALIK:
+            son_garch = simdi
+            _garch_yenile(port)
         for ad, p in _surecler:
             if p.poll() is None:
                 continue
@@ -294,7 +389,7 @@ def main():
         sys.exit(1)
 
     if MOCK_MODE:
-        baslik("2/4  Veri erisimi")
+        baslik("2/5  Veri erisimi")
         yaz("ok", "MOCK mod — IdealData erisimi gerekmiyor")
         yaz("bilgi", "canli veri icin:  DATA_MODE=1 python3 start.py")
     elif not a.no_check and not veri_testi():
@@ -304,6 +399,7 @@ def main():
 
     if not dashboard_baslat(a.port):
         kapat_hepsi()
+    kalicilik(a.port)
     if not kopru_baslat(a.port):
         print("\n  Dashboard calisiyor ama veri akmiyor.")
         print(f"  Arayuz: http://127.0.0.1:{a.port}  (tablolar bos olacak)\n")

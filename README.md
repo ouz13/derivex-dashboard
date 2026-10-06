@@ -70,6 +70,9 @@ IdealData REST ─────────────────────�
 | `bridge_http.py` | HTTP köprüsü (alternatif kaynak) |
 | `start.py` | Tek komutla her şeyi ayağa kaldırır |
 | `idealdata_probe.py` | Bağlantı/yetki teşhis aracı |
+| `store.py` | SQLite kalıcılık katmanı — zaman serisi, model sürümleme |
+| `garch.py` | Depodaki geçmişten gerçekleşmiş volatilite ve GARCH(1,1) |
+| `yield_curve.py` / `fit_curve.py` | Nelson-Siegel-Svensson eğri uydurma |
 
 ### Akış protokolü
 
@@ -101,6 +104,69 @@ git config core.hooksPath .githooks
 Bu kanca `.env` dosyalarını, **yeni** şifre/anahtarları ve aşırı büyük
 dosyaları commit öncesinde yakalar. Mevcut IdealData bilgileri bilinçli bir
 karar olduğu için muaf tutulmuştur.
+
+## Kalıcılık (SQLite)
+
+Daha önce her şey bellekteydi ve süreç kapandığında kayboluyordu. `store.py`
+bunu kalıcı hale getirir: `derivex.db`.
+
+```bash
+python3 store.py --stats          # depoda ne var
+python3 store.py --restore        # son durumu arayüze geri yükle
+python3 store.py --versions nss   # model parametre geçmişi
+python3 store.py --prune 90       # 90 günden eski tick'leri sil
+```
+
+`start.py` bunları kendiliğinden yapar; elle çalıştırmak gerekmez.
+
+**Veritabanı neden Python tarafında?** Veriyi üreten zaten Python
+(`bridge_stream.py`), `sqlite3` her CPython'da gömülü geliyor ve `node:sqlite`
+hâlâ deneysel — CI ile Docker imajının çalıştırdığı Node 20'de hiç yok. Node
+veritabanını hiç açmaz; ihtiyacı olanı zaten var olan HTTP uçlarından alır.
+
+**Yazma noktası tek.** `post_spot_mid`, `post_futures_rates_batch` ve
+`post_options_chain` hem canlı köprünün hem `mock_feed.py`'nin tek geçididir;
+depo oraya bağlıdır, dolayısıyla iki mod da kendiliğinden kalıcıdır. Depo bir
+yan kayıttır: yazamazsa akış depo olmadan sürer.
+
+**Mock ve canlı geçmiş karışmaz.** Her satır `data_mode` taşır ve her okuma
+onu süzer. Üretilmiş fiyatlardan uydurulmuş bir volatilite, piyasadan
+uydurulmuş gibi görünemez.
+
+| Tablo | İçerik |
+|---|---|
+| `spot_tick` / `spot_daily` | Spot zaman serisi ve günlük bar (GARCH girdisi) |
+| `futures_rate_tick` | Vadeli ima edilen getiri serisi |
+| `option_quote` | Opsiyon zinciri anlık görüntüleri (5 dk örnekleme) |
+| `model_version` | Her uydurma **yeni satır** — üzerine yazılmaz |
+| `snapshot` | En son tam durum; yeniden başlatmada arayüzü doldurur |
+
+Model sürümleme olmadan "bu opsiyon hangi eğriyle fiyatlandı" sorusu
+cevaplanamaz; bu yüzden uydurmalar güncellenmez, biriktirilir. Durum ve sürüm
+listesi Discount Rate sekmesindeki **Persistence & Model Versions** panelinde
+görünür.
+
+### GARCH(1,1)
+
+Fcst sütunu eskiden durağan bir JSON dosyasından okunuyordu. Depo günlük
+kapanışları biriktirdiğinden tahmin artık gerçekten hesaplanabiliyor:
+
+```bash
+python3 garch.py                 # tüm ticker'lar
+python3 garch.py --ticker THYAO  # tek ticker, ekrana
+```
+
+Varyans hedeflemeli maksimum olabilirlik (ω = σ̄²(1−α−β)) kullanılır; serbest
+parametre ikiye düştüğü için iki boyutlu kaba + ince ızgara taraması yeter ve
+dış bağımlılık gerekmez. Testler bilinen parametrelerle üretilmiş seriden aynı
+parametrelerin geri geldiğini doğrular.
+
+**60 günlük getiriden az veri varsa tahmin üretilmez.** Depo yeni dolarken
+doğal olarak bu durumdadır; eksikliği makul görünen bir sayıyla doldurmak
+kullanıcıya yanlış bilgi vermek olurdu. Hesaplanan tahmin, durağan dosyanın
+üzerine yazılmaz — Realized Vols sekmesindeki lookback seçicisine **"Store"**
+adıyla ek seçenek olarak eklenir. Depo durağan dosya kadar ticker kapsadığında
+varsayılan olur.
 
 ## Faiz eğrisi (Nelson-Siegel-Svensson)
 

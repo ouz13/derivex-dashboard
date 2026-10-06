@@ -187,6 +187,13 @@ def bir_tur(maturities, fut_map, durum, sessiz=False):
             except Exception:
                 pass
 
+    # Tur sonunda anlik goruntuyu zorla yaz: aralikli yazim tek turluk
+    # calistirmada (--once) yarim dolu bir goruntu birakirdi.
+    try:
+        B._snapshot_bastir(zorla=True)
+    except Exception:
+        pass
+
     if not sessiz:
         print(f"[MOCK] {ts}  spot={spot_n}  vadeli={len(fut_mid)}  opsiyon_satir={opt_n}",
               flush=True)

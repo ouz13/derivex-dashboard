@@ -18,6 +18,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 python3-requests \
     && rm -rf /var/lib/apt/lists/*
 
+# sqlite3 standart kutuphanede gelir ama Debian onu libpython3-stdlib icinde
+# tasir; eksik olsaydi kalicilik CALISMA ANINDA sessizce devre disi kalirdi
+# (store.py hatayi yutar, akis surer). Derleme aninda patlamasi yegdir.
+RUN python3 -c "import sqlite3; print('sqlite3', sqlite3.sqlite_version)"
+
 WORKDIR /app
 
 # Sunucunun kendisi bagimliliksiz calisiyor, ancak Risk sekmesindeki XLSX

@@ -105,7 +105,12 @@ const serverState = {
   optionsChainByTicker: {},
   dividendsByTicker: {},
   yieldCurve: null,        // NSS uydurma sonucu (fit_curve.py gonderir)
-  pricerLog: []
+  pricerLog: [],
+  // SQLite deposunun durumu ve model parametre surumleri. Depoyu Python
+  // tarafi tutuyor (store.py); Node veritabanini hic acmaz, yalnizca
+  // store.py'nin gonderdigi ozeti onbellekte tasir. Boylece Node 20'de
+  // bulunmayan node:sqlite'a bagimlilik olusmuyor.
+  storeStats: null
 };
 
 const DIVIDENDS_FILE = path.join(__dirname, 'dividends.json');
@@ -2362,6 +2367,7 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
       var root = document.getElementById('toolsDiscountCard');
       if (!root) return;
       nssGoster();
+      depoGoster();
       var DISC_STORAGE_KEY = 'discountFactors';
       function loadFactors() {
         try { var r = localStorage.getItem(DISC_STORAGE_KEY); return r ? JSON.parse(r) : {}; } catch(_) { return {}; }
@@ -2439,6 +2445,59 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         if (govde) govde.style.display = '';
       }).catch(function () { durum.textContent = 'unreachable'; });
     }
+
+    // SQLite deposunun durumu ve model parametre surumleri.
+    // Veritabanini Python tarafi tutar; buraya store.py --push-stats'in
+    // gonderdigi ozet gelir. Ozet hic gelmediyse bunu gizlemek yerine
+    // "nasil doldurulur" yazilir.
+    function depoGoster() {
+      var durum = document.getElementById('depoStatus');
+      var govde = document.getElementById('depoBody');
+      if (!durum) return;
+      fetch('/api/store-stats').then(function (r) { return r.json(); }).then(function (d) {
+        var s = d && d.stats;
+        if (!s) {
+          durum.textContent = 'no store report yet — run: python3 store.py --push-stats';
+          durum.style.color = '#64748b';
+          if (govde) govde.style.display = 'none';
+          return;
+        }
+        // WAL gecicidir, denetim noktasinda kuculur: kalici boyutla
+        // toplanmasi depoyu oldugundan buyuk gosteriyordu.
+        var mb = (Number(s.db_bytes || 0) / 1048576).toFixed(2);
+        var wal = (Number(s.wal_bytes || 0) / 1048576).toFixed(2);
+        var gun = (s.first_day && s.last_day)
+          ? (s.first_day === s.last_day ? s.first_day : s.first_day + ' → ' + s.last_day)
+          : 'no daily bars yet';
+        durum.textContent = s.spot_days + ' daily bar(s) over ' + s.spot_tickers
+          + ' ticker(s) · ' + gun + ' · ' + mb + ' MB (+' + wal
+          + ' MB WAL) · mode ' + s.data_mode;
+        durum.style.color = s.write_error ? '#dc2626' : '#64748b';
+        if (s.write_error) durum.textContent += ' · WRITE ERROR: ' + s.write_error;
+
+        document.getElementById('depoCounts').textContent =
+          'spot_ticks=' + s.spot_ticks + '  futures_ticks=' + s.futures_ticks
+          + '  option_quotes=' + s.option_quotes + '  model_versions=' + s.model_versions
+          + '  db=' + s.db_path;
+
+        var satirlar = (s.versions || []).map(function (v) {
+          var q = (v.fit_quality === null || v.fit_quality === undefined)
+            ? '-' : Number(v.fit_quality).toFixed(6);
+          return '<tr>'
+            + '<td style="padding:3px 10px;">#' + v.id + '</td>'
+            + '<td style="padding:3px 10px;">' + String(v.ts || '').replace('T', ' ').slice(0, 19) + '</td>'
+            + '<td style="padding:3px 10px;font-weight:600;">' + v.model + '</td>'
+            + '<td style="padding:3px 10px;">' + (v.scope || '—') + '</td>'
+            + '<td style="padding:3px 10px;text-align:right;">' + q + '</td>'
+            + '<td style="padding:3px 10px;">' + v.data_mode + '</td>'
+            + '</tr>';
+        }).join('');
+        document.getElementById('depoVersions').innerHTML = satirlar
+          || '<tr><td colspan="6" style="padding:6px 10px;color:#64748b;">no model versions recorded yet</td></tr>';
+        if (govde) govde.style.display = '';
+      }).catch(function () { durum.textContent = 'unreachable'; });
+    }
+    window.depoYenile = depoGoster;
 
     function initDividends() {
       const root = document.getElementById('toolsDividendsCard');
@@ -3255,6 +3314,28 @@ function toolsContent(toolsTab) {
       +     '</table></div>'
       +   '</div>'
       + '</div>'
+      + '<div id="depoPanel" style="margin:0 0 14px 0;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;background:#f8fafc;">'
+      +   '<div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;">'
+      +     '<span style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">'
+      +       'Persistence &amp; Model Versions</span>'
+      +     '<button class="action-btn" type="button" onclick="depoYenile()" style="padding:2px 9px;font-size:11px;">Refresh</button>'
+      +   '</div>'
+      +   '<div id="depoStatus" style="font-size:12px;color:#64748b;">loading…</div>'
+      +   '<div id="depoBody" style="display:none;margin-top:8px;">'
+      +     '<div id="depoCounts" style="font-size:11px;color:#334155;margin-bottom:8px;font-family:monospace;word-break:break-all;"></div>'
+      +     '<div style="overflow-x:auto;"><table style="border-collapse:collapse;font-size:11px;width:100%;">'
+      +       '<thead><tr style="background:#0f1728;color:#fff;">'
+      +         '<th style="padding:4px 10px;text-align:left;">Ver</th>'
+      +         '<th style="padding:4px 10px;text-align:left;">Fitted At (UTC)</th>'
+      +         '<th style="padding:4px 10px;text-align:left;">Model</th>'
+      +         '<th style="padding:4px 10px;text-align:left;">Scope</th>'
+      +         '<th style="padding:4px 10px;text-align:right;">Fit Quality</th>'
+      +         '<th style="padding:4px 10px;text-align:left;">Mode</th>'
+      +       '</tr></thead>'
+      +       '<tbody id="depoVersions"></tbody>'
+      +     '</table></div>'
+      +   '</div>'
+      + '</div>'
       + '<div class="table-wrap"><table class="rv-table"><thead><tr>'
       + '<th>Tenor</th><th>Rate (%)</th><th></th>'
       + '</tr></thead><tbody>' + discRows + '</tbody></table></div></div>';
@@ -3823,12 +3904,104 @@ function computeRealizedVolPercent(prices, endMs, windowDays) {
 // Fcst sutunu tahmin dosyasindan okunur; mock RV degerleri de ayni dosyadaki
 // tahminlerin etrafinda uretilir ki tablo kendi icinde tutarli olsun
 // (aksi halde RV %20 iken tahmin %46 gibi anlamsiz ciftler cikiyor).
+// Tahmin yukunu TEK yerden kurar: hem mock RV uretimi hem Fcst sutunu
+// bunu kullanir. Ayri ayri dosya secmeleri, ikisinin farkli kaynaklara
+// dusup tabloda RV %20 / Fcst %46 gibi tutarsiz ciftler uretmesine yol
+// aciyordu.
+//
+// DURAGAN DOSYA ILE DEPODAN HESAPLANAN TAHMIN NASIL BIRARADA DURUYOR
+// Arayuzde zaten bir "lookback" secici var ve secenekleri dogrudan
+// lookbacks anahtarlarindan uretiliyor. Depodan hesaplanan tahmin bu
+// yuzden duragan dosyanin UZERINE YAZILMIYOR, yanina EK BIR SECENEK
+// olarak ekleniyor ("Store"). Boylece:
+//   * kullanici hangi tahmini gordugunu secerek biliyor;
+//   * depo henuz 3 ticker kapsiyorken 46 satirin Fcst sutunu bosalmiyor.
+// Depo duragan dosya kadar ticker kapsadiginda "Store" varsayilan olur.
+const STORE_LOOKBACK_ADI = 'Store';
+
+function storeForecastDosyasi() {
+  const p = path.join(__dirname, 'garch_forecasts_store.json');
+  try {
+    if (!fs.existsSync(p)) return null;
+    const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (!d || typeof d !== 'object' || !d.lookbacks) return null;
+    // Dosya veri modunu tasir. MOCK depodan uretilmis bir tahmin canli
+    // bir ekrana, ya da tersi, asla girmemeli.
+    const beklenen = MOCK_MODE ? 'MOCK' : 'LIVE';
+    if (d.data_mode && d.data_mode !== beklenen) return null;
+    if (!d.fitted) return null;
+    const lb = d.lookbacks.store || d.lookbacks[STORE_LOOKBACK_ADI];
+    if (!lb || !Object.keys(lb).length) return null;
+    return { data: d, lookback: lb, path: p };
+  } catch (_) {
+    return null;                       // bozuk dosya duragan yolu bozmamali
+  }
+}
+
+function duraganForecastDosyasi() {
+  const adaylar = [
+    path.join(__dirname, 'realized_forecasts_all_models.json'),
+    path.join(__dirname, 'garch_forecasts_all_models.json'),
+    path.join(__dirname, '..', 'HUD', 'iv-ui', 'public', 'realized_forecasts_all_models.json'),
+    path.join(__dirname, 'garch_forecasts.json'),
+  ];
+  for (const p of adaylar) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (d && typeof d === 'object') return { data: d, path: p };
+    } catch (_) { /* bozuk dosyayi atla */ }
+  }
+  return null;
+}
+
+function forecastPayload() {
+  const duragan = duraganForecastDosyasi();
+  const depo = storeForecastDosyasi();
+
+  if (!depo) {
+    return {
+      data: duragan ? duragan.data : {},
+      path: duragan ? duragan.path : null,
+      source: duragan ? 'static' : 'none',
+      storeTickers: 0,
+    };
+  }
+
+  const depoSayi = Object.keys(depo.lookback).length;
+  if (!duragan || !duragan.data.lookbacks) {
+    // Duragan dosya yok (ya da eski semada): depo tek kaynak.
+    return { data: depo.data, path: depo.path, source: 'store', storeTickers: depoSayi };
+  }
+
+  const duraganLb = duragan.data.lookbacks;
+  const duraganSayi = Math.max(
+    0, ...Object.values(duraganLb).map((m) => Object.keys(m || {}).length));
+  // Depo duragan dosya kadar ticker kapsiyorsa varsayilan olsun; aksi
+  // halde ek secenek olarak kalsin ki sparse depo tabloyu bosaltmasin.
+  const depoVarsayilan = depoSayi >= duraganSayi;
+
+  const birlesik = depoVarsayilan
+    ? { [STORE_LOOKBACK_ADI]: depo.lookback, ...duraganLb }
+    : { ...duraganLb, [STORE_LOOKBACK_ADI]: depo.lookback };
+
+  return {
+    data: { ...duragan.data, lookbacks: birlesik },
+    path: depo.path,
+    source: depoVarsayilan ? 'store' : 'mixed',
+    storeTickers: depoSayi,
+    staticTickers: duraganSayi,
+  };
+}
+
 function mockTahminTabani() {
   try {
-    const p = path.join(__dirname, 'realized_forecasts_all_models.json');
-    if (!fs.existsSync(p)) return {};
-    const d = JSON.parse(fs.readFileSync(p, 'utf8'));
-    const lookback = d.lookbacks && (d.lookbacks['4Y'] || Object.values(d.lookbacks)[0]);
+    const { data: d } = forecastPayload();
+    if (!d || !d.lookbacks) return {};
+    // Arayuzun VARSAYILAN olarak sececegi lookback ile ayni olani kullan
+    // (secici bundle.lookbackKeys[0]'i aliyor). Baska bir lookback
+    // secilirse mock RV ile Fcst sutunu yine ayrisirdi.
+    const lookback = Object.values(d.lookbacks)[0];
     if (!lookback) return {};
     const out = {};
     for (const [ticker, modeller] of Object.entries(lookback)) {
@@ -3932,32 +4105,29 @@ async function getRealizedVolTable(forceRefresh = false) {
     .then((payload) => {
       // Load forecast payload with preference for multi-model/lookback schema.
       let forecasts = {};
+      let forecastSource = { source: 'none', storeTickers: 0 };
       try {
-        const forecastCandidates = [
-          path.join(__dirname, 'realized_forecasts_all_models.json'),
-          path.join(__dirname, 'garch_forecasts_all_models.json'),
-          path.join(__dirname, '..', 'HUD', 'iv-ui', 'public', 'realized_forecasts_all_models.json'),
-          path.join(__dirname, 'garch_forecasts.json'),
-        ];
+        const secili = forecastPayload();
+        const forecastData = secili.data;
+        forecastSource = secili;
 
-        const selectedPath = forecastCandidates.find((p) => fs.existsSync(p));
-        if (selectedPath) {
-          const forecastData = JSON.parse(fs.readFileSync(selectedPath, 'utf8'));
-
-          if (forecastData && typeof forecastData === 'object' && forecastData.lookbacks && typeof forecastData.lookbacks === 'object') {
-            forecasts = forecastData;
-          } else if (forecastData && typeof forecastData === 'object') {
-            // Legacy schema: { TICKER: {"15D (%)": ...} }
-            Object.keys(forecastData).forEach((ticker) => {
-              forecasts[String(ticker || '').toUpperCase()] = forecastData[ticker];
-            });
-          }
+        if (forecastData && typeof forecastData === 'object' && forecastData.lookbacks && typeof forecastData.lookbacks === 'object') {
+          forecasts = forecastData;
+        } else if (forecastData && typeof forecastData === 'object') {
+          // Legacy schema: { TICKER: {"15D (%)": ...} }
+          Object.keys(forecastData).forEach((ticker) => {
+            forecasts[String(ticker || '').toUpperCase()] = forecastData[ticker];
+          });
         }
       } catch (err) {
         console.error('Warning: could not load forecast payload:', err.message);
       }
-      
+
       payload.forecasts = forecasts;
+      // Kaynagi arayuze tasi: depodan hesaplanmis bir tahminle duragan
+      // bir dosyadan okunmus tahmin ayirt edilebilir olmali.
+      payload.forecast_source = forecastSource.source;
+      payload.forecast_store_tickers = forecastSource.storeTickers || 0;
       realizedVolCache.payload = payload;
       realizedVolCache.generatedAtMs = Date.now();
       return payload;
@@ -4890,6 +5060,31 @@ const server = http.createServer(async (req, res) => {
         serverState.yieldCurve = { ...p, ts: new Date().toISOString() };
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: true, points: (p.curve || []).length }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
+      }
+    });
+    return;
+  }
+
+  // Depo durumu. Veritabanini Python tarafi tutar; bu uc yalnizca
+  // store.py --push-stats'in gonderdigi ozeti saklayip arayuze verir.
+  if (url.pathname === '/api/store-stats' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: true, stats: serverState.storeStats }));
+    return;
+  }
+
+  if (url.pathname === '/api/store-stats' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; if (body.length > 500_000) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const p = JSON.parse(body || '{}');
+        serverState.storeStats = { ...p, received_at: new Date().toISOString() };
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true }));
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
