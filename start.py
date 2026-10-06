@@ -248,6 +248,18 @@ def _stats_gonder(port):
         pass
 
 
+def _model_senkron(port):
+    """Tarayicidaki kalibrasyonlari surum gecmisine alir. Sessiz."""
+    try:
+        subprocess.run([sys.executable, "store.py", "--sync-models"],
+                       capture_output=True, text=True, timeout=30, cwd=KOK,
+                       env=dict(os.environ,
+                                FRONTEND_BASE_URL=f"http://127.0.0.1:{port}",
+                                DATA_MODE=str(DATA_MODE)))
+    except Exception:
+        pass
+
+
 def _garch_yenile(port):
     """
     Depodaki gunluk kapanislardan GARCH/RV tahminini yeniden hesaplar.
@@ -340,7 +352,8 @@ def izle(port):
         simdi = time.time()
         if simdi - son_stats >= STATS_ARALIK:
             son_stats = simdi
-            _stats_gonder(port)
+            _model_senkron(port)      # kalibrasyonlari surum gecmisine al
+            _stats_gonder(port)       # sonra ozeti gonder ki yeni surum gorunsun
         if simdi - son_garch >= GARCH_ARALIK:
             son_garch = simdi
             _garch_yenile(port)

@@ -110,7 +110,14 @@ const serverState = {
   // tarafi tutuyor (store.py); Node veritabanini hic acmaz, yalnizca
   // store.py'nin gonderdigi ozeti onbellekte tasir. Boylece Node 20'de
   // bulunmayan node:sqlite'a bagimlilik olusmuyor.
-  storeStats: null
+  storeStats: null,
+  // Son BASARILI kalibrasyonlar, 'model|kapsam' anahtariyla. Kalibrasyon
+  // tarayicida kostugu icin sonucu buraya gonderir; bir dahaki sefere
+  // uyum tutmazsa fallback zinciri buradan okur.
+  modelParams: {},
+  // Opsiyon zincirinin ticker basina alinma zamani. Fiyatlarin yasini
+  // gostermek icin: bayat veriyle uretilmis bir egri taze gorunmemeli.
+  optionsChainMeta: {}
 };
 
 const DIVIDENDS_FILE = path.join(__dirname, 'dividends.json');
@@ -127,6 +134,29 @@ try {
     if (!Array.isArray(serverState.pricerLog)) serverState.pricerLog = [];
   }
 } catch (_) {}
+
+// Son iyi kalibrasyonlar diske yazilir: yeniden baslatmada "onceki
+// parametre setine donus" basamagi bos olmasin. Veri modu dosyaya
+// gomulur — mock veriden uydurulmus parametreler canli moda tasinmamali.
+const MODEL_PARAMS_FILE = path.join(__dirname, 'model_params.json');
+try {
+  if (fs.existsSync(MODEL_PARAMS_FILE)) {
+    const yuk = JSON.parse(fs.readFileSync(MODEL_PARAMS_FILE, 'utf8'));
+    if (yuk && typeof yuk === 'object' && yuk.mod === (MOCK_MODE ? 'MOCK' : 'LIVE')) {
+      serverState.modelParams = yuk.params || {};
+    }
+  }
+} catch (_) {}
+
+function modelParamsYaz() {
+  try {
+    fs.writeFileSync(MODEL_PARAMS_FILE, JSON.stringify({
+      mod: MOCK_MODE ? 'MOCK' : 'LIVE',
+      updated_at: new Date().toISOString(),
+      params: serverState.modelParams,
+    }, null, 2), 'utf8');
+  } catch (_) {}
+}
 
 function formatSpot(value) {
   const n = Number(value);
@@ -155,6 +185,7 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
   <title>Derivex Dashboard</title>
   <script src="/xlsx.js"></script>
   <script src="/risk-handler.js"></script>
+  <script src="/model-fallback.js"></script>
   <style>
     :root {
       --bg: #f4f5f7;
@@ -2170,21 +2201,61 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
 
           // --- Step 2: calibrate selected model against market IVs ---
           if (statusEl) statusEl.textContent = 'Calibrating ' + modelLabel + ' to ' + calibPoints.length + ' market IV points...';
+
+          const TOHUM = {
+            heston: { kappa: 2.0, theta: 0.10, sigma: 0.50, rho: -0.50, v0: 0.10 },
+            svi: { a: 0.02, b: 0.2, rho: -0.4, m: 0.0, sigma: 0.2 },
+          };
+          const kapsam = TARGET_TICKER + ':' + vade;
+
+          // Her iki model de uyduruluyor. Maliyeti var ama fallback
+          // zincirinin "alternatif model" basamagi ancak digerinin sonucu
+          // elde olursa calisabilir; istenen model yakinsamadiginda
+          // kullaniciyi bekletip ikinci bir tur baslatmak daha kotu.
           let hestonFit = null;
           let sviFit = null;
           if (calibPoints.length >= 2) {
-            if (selectedModel === 'svi') {
-              sviFit = fitSvi(calibPoints);
-            } else {
-              hestonFit = fitHeston(calibPoints);
-            }
+            try { hestonFit = fitHeston(calibPoints); } catch (_) { hestonFit = null; }
+            try { sviFit = fitSvi(calibPoints); } catch (_) { sviFit = null; }
           }
-          const HESTON = hestonFit
-            ? hestonFit.params
-            : { kappa: 2.0, theta: 0.10, sigma: 0.50, rho: -0.50, v0: 0.10 };
-          const SVI = sviFit
-            ? sviFit.params
-            : { a: 0.02, b: 0.2, rho: -0.4, m: 0.0, sigma: 0.2 };
+
+          // Son iyi parametreler — zincirin ucuncu basamagi. Ulasilamazsa
+          // zincir bir basamak kisalir, akis durmaz.
+          let sonIyi = {};
+          try {
+            const mp = await fetch('/api/model-params?scope=' + encodeURIComponent(kapsam));
+            if (mp.ok) sonIyi = (await mp.json()).params || {};
+          } catch (_) { /* depo yoksa zincir varsayilana kadar iner */ }
+
+          const secim = window._modelFallback({
+            istenen: selectedModel === 'svi' ? 'svi' : 'heston',
+            uyumlar: { heston: hestonFit, svi: sviFit },
+            sonIyi: sonIyi,
+            varsayilan: TOHUM,
+          });
+
+          // Kullanilan model fallback sonucunda degisebilir; ciktinin
+          // hangi modelden uretildigi buradan okunuyor.
+          const kullanilanModel = secim.model;
+          const HESTON = kullanilanModel === 'heston' ? (secim.params || TOHUM.heston) : TOHUM.heston;
+          const SVI = kullanilanModel === 'svi' ? (secim.params || TOHUM.svi) : TOHUM.svi;
+
+          // Basarili kalibrasyonu sakla ki bir dahaki sefere zincirin
+          // "onceki" basamagi dolu olsun. Yalnizca kabul edilmis uyum.
+          if (secim.kaynak === 'kalibre' || secim.kaynak === 'alternatif') {
+            fetch('/api/model-params', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model: kullanilanModel, scope: kapsam,
+                params: secim.params, rmse: secim.rmse,
+                points: calibPoints.length,
+              }),
+            }).catch(function () { /* saklama basarisizligi egriyi bozmamali */ });
+          }
+
+          // Veri yasi — "veri gecikmelerinde kontrollu degrade".
+          const yas = window._modelVeriYasi(data && data.meta ? data.meta.received_at : null);
 
           // --- Step 3: build output rows using calibrated params ---
           const outRows = [];
@@ -2202,7 +2273,9 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
             const cMid = mid(row?.call_bid_price, row?.call_ask_price);
             const pMid = mid(row?.put_bid_price, row?.put_ask_price);
 
-            const cModelPx = selectedModel === 'svi'
+            // Secilen degil KULLANILAN model: fallback alternatife
+            // dustuyse fiyat da o modelden gelmeli.
+            const cModelPx = kullanilanModel === 'svi'
               ? sviCallPrice(S, K, r, T, SVI)
               : hestonCallPrice(S, K, r, T, HESTON);
             const pModelPx = Number.isFinite(cModelPx) ? (cModelPx - S + K * Math.exp(-r * T)) : null;
@@ -2240,25 +2313,59 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
             }
           }
 
-          renderCurveSvg(marketPoints, modelPoints, modelLabel);
+          const kullanilanEtiket = kullanilanModel === 'svi' ? 'SVI' : 'Heston';
+          // Basliklar kalibrasyondan ONCE secilen modele gore yazilmisti;
+          // fallback modeli degistirdiyse sutunlar yanlis etiketle kalirdi.
+          if (legendModelTextEl) legendModelTextEl.textContent = kullanilanEtiket + ' IV';
+          if (callModelHeadEl) callModelHeadEl.textContent = 'Call ' + kullanilanEtiket + ' IV';
+          if (putModelHeadEl) putModelHeadEl.textContent = 'Put ' + kullanilanEtiket + ' IV';
+          renderCurveSvg(marketPoints, modelPoints, kullanilanEtiket);
+
           if (statusEl) {
-            if (selectedModel === 'svi') {
-              const rmseStr = sviFit ? ' | IV RMSE: ' + (sviFit.rmseIv * 100).toFixed(2) + '%' : ' (fallback params)';
-              statusEl.textContent = 'Calibrated SVI to ' + calibPoints.length + ' IV points' + rmseStr
-                + ' | a=' + SVI.a.toFixed(3)
-                + ' b=' + SVI.b.toFixed(3)
-                + ' rho=' + SVI.rho.toFixed(2)
-                + ' m=' + SVI.m.toFixed(3)
-                + ' sigma=' + SVI.sigma.toFixed(3);
+            // Zincirin hangi basamaginda olundugu ACIKCA yaziliyor.
+            // Sessizce varsayilana dusmek, kullaniciya kalibre edilmis bir
+            // model gosterdigini sanmasina yol acardi.
+            var bas;
+            if (secim.kaynak === 'kalibre') {
+              bas = 'Calibrated ' + kullanilanEtiket + ' to ' + calibPoints.length + ' IV points'
+                  + ' | IV RMSE: ' + (secim.rmse * 100).toFixed(2) + '%';
+            } else if (secim.kaynak === 'alternatif') {
+              bas = 'FALLBACK · ' + modelLabel + ' did not converge, using '
+                  + kullanilanEtiket + ' | IV RMSE: ' + (secim.rmse * 100).toFixed(2) + '%';
+            } else if (secim.kaynak === 'onceki' || secim.kaynak === 'onceki-alternatif') {
+              bas = 'FALLBACK · no usable fit now, using last good '
+                  + kullanilanEtiket + ' calibration from '
+                  + String(secim.ts || '').replace('T', ' ').slice(0, 19);
             } else {
-              const rmseStr = hestonFit ? ' | IV RMSE: ' + (hestonFit.rmseIv * 100).toFixed(2) + '%' : ' (fallback params)';
-              statusEl.textContent = 'Calibrated Heston to ' + calibPoints.length + ' IV points' + rmseStr
-                + ' | kappa=' + HESTON.kappa.toFixed(2)
-                + ' theta=' + HESTON.theta.toFixed(3)
-                + ' sigma=' + HESTON.sigma.toFixed(2)
-                + ' rho=' + HESTON.rho.toFixed(2)
-                + ' v0=' + HESTON.v0.toFixed(3);
+              bas = 'NOT CALIBRATED · seed parameters only — curve is indicative';
             }
+
+            var red = Object.keys(secim.redSebepleri || {})
+              .map(function (m) { return m + ': ' + secim.redSebepleri[m]; }).join(', ');
+            if (red) bas += ' | rejected — ' + red;
+
+            // Veri yasi ayri bir uyari: parametreler iyi olsa bile
+            // dayandiklari fiyatlar eskiyse egri taze degildir.
+            if (yas.durum === 'bayat' || yas.durum === 'cok-bayat') {
+              bas += ' | STALE DATA: prices ' + yas.metin;
+            }
+
+            var p = secim.params || {};
+            if (kullanilanModel === 'svi' && Number.isFinite(p.a)) {
+              bas += ' | a=' + p.a.toFixed(3) + ' b=' + p.b.toFixed(3)
+                   + ' rho=' + p.rho.toFixed(2) + ' m=' + p.m.toFixed(3)
+                   + ' sigma=' + p.sigma.toFixed(3);
+            } else if (kullanilanModel === 'heston' && Number.isFinite(p.kappa)) {
+              bas += ' | kappa=' + p.kappa.toFixed(2) + ' theta=' + p.theta.toFixed(3)
+                   + ' sigma=' + p.sigma.toFixed(2) + ' rho=' + p.rho.toFixed(2)
+                   + ' v0=' + p.v0.toFixed(3);
+            }
+
+            statusEl.textContent = bas;
+            statusEl.style.color = secim.guvenilir
+              ? (yas.durum === 'cok-bayat' ? '#b45309' : '')
+              : '#b45309';
+            if (secim.kaynak === 'varsayilan') statusEl.style.color = '#dc2626';
           }
         } catch (err) {
           if (bodyEl) bodyEl.innerHTML = '<tr><td class="options-empty" colspan="9">Failed to load volatility curve data.</td></tr>';
@@ -4155,6 +4262,20 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Fallback mantigi ayri dosyada: hem tarayiciya servis ediliyor hem
+  // testlerden require ediliyor. risk-handler.js gibi JS'i dizi icinde
+  // string olarak tasimiyor — o yaklasimda kacis zinciri iki kez bozulmustu.
+  if (url.pathname === '/model-fallback.js') {
+    try {
+      const data = fs.readFileSync(path.join(__dirname, 'model_fallback.js'));
+      res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+      res.end(data);
+    } catch (e) {
+      res.writeHead(404); res.end('model_fallback.js not found');
+    }
+    return;
+  }
+
   if (url.pathname === '/risk-handler.js') {
     const js = [
       'window._riskPortfolio = [];',
@@ -4892,7 +5013,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const ticker = (url.searchParams.get('ticker') || '').trim().toUpperCase();
-    res.end(JSON.stringify({ ok: true, ticker, options: ticker ? (serverState.optionsChainByTicker[ticker] || []) : [] }));
+    res.end(JSON.stringify({
+      ok: true, ticker,
+      options: ticker ? (serverState.optionsChainByTicker[ticker] || []) : [],
+      meta: ticker ? (serverState.optionsChainMeta[ticker] || null) : null,
+    }));
     return;
   }
 
@@ -4960,6 +5085,14 @@ const server = http.createServer(async (req, res) => {
         });
 
         serverState.optionsChainByTicker[ticker] = normalized;
+        // Alinma zamani kaydediliyor: arayuz fiyatlarin yasini gosterebilsin.
+        // Kaynagin kendi ts'i yalnizca saat:dakika:saniye tasidigi icin
+        // sunucunun gorme ani kullaniliyor — tarih bilgisi orada yok.
+        serverState.optionsChainMeta[ticker] = {
+          received_at: new Date().toISOString(),
+          source_ts: payload.ts || null,
+          rows: normalized.length,
+        };
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: true, ticker, count: normalized.length }));
@@ -5060,6 +5193,63 @@ const server = http.createServer(async (req, res) => {
         serverState.yieldCurve = { ...p, ts: new Date().toISOString() };
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: true, points: (p.curve || []).length }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
+      }
+    });
+    return;
+  }
+
+  // Son basarili kalibrasyonlar. Fallback zincirinin "onceki parametre
+  // setine donus" basamagi bunu okur.
+  if (url.pathname === '/api/model-params' && req.method === 'GET') {
+    const kapsam = (url.searchParams.get('scope') || '').trim();
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    if (!kapsam) {
+      res.end(JSON.stringify({ ok: true, params: serverState.modelParams }));
+      return;
+    }
+    // Kapsam verilmisse yalnizca o kapsamin modelleri donuyor; arayuz
+    // zinciri kurarken {heston:…, svi:…} seklinde bekliyor.
+    const cikti = {};
+    for (const [anahtar, deger] of Object.entries(serverState.modelParams)) {
+      const ayirac = anahtar.indexOf('|');
+      if (ayirac === -1) continue;
+      if (anahtar.slice(ayirac + 1) === kapsam) cikti[anahtar.slice(0, ayirac)] = deger;
+    }
+    res.end(JSON.stringify({ ok: true, scope: kapsam, params: cikti }));
+    return;
+  }
+
+  if (url.pathname === '/api/model-params' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; if (body.length > 200_000) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const p = JSON.parse(body || '{}');
+        const model = String(p.model || '').trim().toLowerCase();
+        const kapsam = String(p.scope || '').trim();
+        if (!model || !kapsam || !p.params || typeof p.params !== 'object') {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: 'model, scope and params are required' }));
+          return;
+        }
+        // Yalnizca KABUL EDILMIS uyumlar saklanir. Kotu bir uyumu buraya
+        // yazmak, fallback'in bir dahaki sefere ona donmesi demek olurdu.
+        const rmse = Number(p.rmse);
+        if (!Number.isFinite(rmse)) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: 'numeric rmse is required' }));
+          return;
+        }
+        serverState.modelParams[`${model}|${kapsam}`] = {
+          params: p.params, rmse, ts: new Date().toISOString(),
+          points: Number(p.points) || null,
+        };
+        modelParamsYaz();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true }));
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: false, error: 'invalid json' }));

@@ -606,6 +606,48 @@ def _restore(taban_url=None):
         d.kapat()
 
 
+def _sync_models(taban_url=None):
+    """
+    Dashboard'daki son iyi kalibrasyonlari surum gecmisine alir.
+
+    Volatilite kalibrasyonu tarayicida kosuyor ve sonucu Node'un
+    /api/model-params ucunda duruyor. Surum TABLOSU ise burada. Bu islev
+    ikisini bagliyor: ayni parametre seti iki kez yazilmiyor, yalnizca
+    degisenler yeni surum olarak ekleniyor.
+    """
+    import requests
+    taban = taban_url or os.environ.get("FRONTEND_BASE_URL", "http://127.0.0.1:5173")
+    d = Store()
+    try:
+        r = requests.get(f"{taban}/api/model-params", timeout=5)
+        r.raise_for_status()
+        tumu = (r.json() or {}).get("params") or {}
+
+        eklenen = 0
+        for anahtar, kayit in tumu.items():
+            if "|" not in anahtar or not isinstance(kayit, dict):
+                continue
+            model, kapsam = anahtar.split("|", 1)
+            params = kayit.get("params")
+            if not isinstance(params, dict):
+                continue
+            # Ayni parametreler zaten en son surumse tekrar yazma: her
+            # senkronizasyonda yeni satir acmak gecmisi okunamaz hale
+            # getirirdi.
+            son = d.model_surumleri(model=model, scope=kapsam, limit=1)
+            if son and son[0]["params"] == params:
+                continue
+            d.model_surum_yaz(model, params, scope=kapsam,
+                              fit_quality=_sayi(kayit.get("rmse")),
+                              meta={"points": kayit.get("points"),
+                                    "calibrated_at": kayit.get("ts")})
+            eklenen += 1
+        print(f"[STORE] model senkronu: {eklenen} yeni surum / {len(tumu)} kalibrasyon")
+        return eklenen
+    finally:
+        d.kapat()
+
+
 def _push_stats(taban_url=None):
     """Depo istatistiklerini ve model surumlerini arayuz paneline gonderir."""
     import requests
@@ -626,6 +668,8 @@ def main():
     ap.add_argument("--stats", action="store_true", help="depo icerigini yaz")
     ap.add_argument("--restore", action="store_true", help="snapshot'i dashboard'a yukle")
     ap.add_argument("--push-stats", action="store_true", help="istatistikleri arayuze gonder")
+    ap.add_argument("--sync-models", action="store_true",
+                    help="dashboard'daki kalibrasyonlari surum gecmisine al")
     ap.add_argument("--prune", type=int, metavar="GUN", help="GUN gunden eski tick'leri sil")
     ap.add_argument("--versions", metavar="MODEL", help="model parametre gecmisi")
     ap.add_argument("--base-url", help="dashboard adresi (varsayilan FRONTEND_BASE_URL)")
@@ -633,6 +677,9 @@ def main():
 
     if a.restore:
         _restore(a.base_url)
+        return
+    if a.sync_models:
+        _sync_models(a.base_url)
         return
     if a.push_stats:
         print(json.dumps(_push_stats(a.base_url), indent=2))

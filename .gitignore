@@ -24,3 +24,5 @@ audit-log.jsonl
 *.db-wal
 *.db-shm
 garch_forecasts_store.json
+# Son iyi kalibrasyonlar — calisma zamani durumu, mock/canli modu tasir
+model_params.json

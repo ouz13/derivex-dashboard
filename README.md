@@ -71,6 +71,7 @@ IdealData REST ─────────────────────�
 | `start.py` | Tek komutla her şeyi ayağa kaldırır |
 | `idealdata_probe.py` | Bağlantı/yetki teşhis aracı |
 | `store.py` | SQLite kalıcılık katmanı — zaman serisi, model sürümleme |
+| `model_fallback.js` | Kalibrasyon başarısızlığında fallback zinciri |
 | `garch.py` | Depodaki geçmişten gerçekleşmiş volatilite ve GARCH(1,1) |
 | `yield_curve.py` / `fit_curve.py` | Nelson-Siegel-Svensson eğri uydurma |
 
@@ -167,6 +168,44 @@ kullanıcıya yanlış bilgi vermek olurdu. Hesaplanan tahmin, durağan dosyanı
 üzerine yazılmaz — Realized Vols sekmesindeki lookback seçicisine **"Store"**
 adıyla ek seçenek olarak eklenir. Depo durağan dosya kadar ticker kapsadığında
 varsayılan olur.
+
+## Model başarısızlığında ne oluyor
+
+Kalibrasyon "ya çalışır ya patlar" bir iş değil; üç ayrı şekilde bozuluyor ve
+üçünün davranışı farklı:
+
+1. **Hiç uyum yapılamaz** — yeterli kotasyon noktası yok
+2. **Uyum yapılır ama kötü** — optimize edici bir şey döndürür, RMSE %40'tır
+3. **Veri bayattır** — parametreler iyi ama dayandıkları fiyatlar eski
+
+İkincisi en sinsisi: `fitHeston`/`fitSvi` asla `null` dönmüyordu, her zaman
+ızgaranın en iyi noktasını veriyordu. Uyum kalitesine bakılmadığı sürece
+"Calibrated" yazısı hiçbir şey anlatmayan bir parametre setini meşrulaştırır.
+Artık **IV RMSE'si 5 volatilite puanını aşan uyum reddediliyor.**
+
+**Zincir:**
+
+| Basamak | Koşul | Güvenilir? |
+|---|---|---|
+| `kalibre` | İstenen model yakınsadı | ✓ |
+| `alternatif` | İstenen yakınsamadı, diğeri yakınsadı (Heston ↔ SVI) | ✓ |
+| `onceki` | İkisi de olmadı → bu vadenin son başarılı kalibrasyonu | ✗ |
+| `onceki-alternatif` | Diğer modelin son başarılı kalibrasyonu | ✗ |
+| `varsayilan` | Hiçbiri yok → tohum parametreleri | ✗ |
+
+**Hangi basamakta olunduğu ekranda açıkça yazıyor**, red sebepleriyle
+birlikte. Sessizce varsayılana düşmek, kullanıcının kalibre edilmiş bir model
+gördüğünü sanmasına yol açardı. Fallback modeli değiştirirse sütun başlıkları
+da değişiyor — "Heston IV" başlığı altında SVI değeri gösterilmiyor.
+
+Veri yaşı ayrı bir uyarı: parametreler iyi olsa bile fiyatlar 15 dakikadan
+eskiyse `STALE DATA: prices 2h old` yazıyor. Seans dışında son kapanışı görmek
+meşru, onu canlı sanmak değil.
+
+Mantık `model_fallback.js` içinde ayrı duruyor — hem tarayıcıya servis
+ediliyor hem testlerden `require` ediliyor. Son iyi kalibrasyonlar
+`/api/model-params` ucunda tutulup `model_params.json`'a yazılıyor;
+`store.py --sync-models` bunları sürüm geçmişine alıyor.
 
 ## Faiz eğrisi (Nelson-Siegel-Svensson)
 
