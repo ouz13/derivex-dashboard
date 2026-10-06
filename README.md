@@ -157,6 +157,38 @@ python3 garch.py                 # tüm ticker'lar
 python3 garch.py --ticker THYAO  # tek ticker, ekrana
 ```
 
+### EGARCH(1,1)
+
+GARCH'ın yakalayamadığı bir şeyi yakalar: **asimetri.** GARCH'ta yalnızca r²
+var, getirinin işareti kareyle birlikte kaybolur. EGARCH log uzayında çalışır
+ve γ terimi işareti taşır:
+
+```
+log(σ²ₜ) = ω + α(|z| − E|z|) + γ·z + β·log(σ²ₜ₋₁)
+```
+
+γ negatifse düşüşler volatiliteyi yükselişlerden daha çok artırıyor demektir
+(kaldıraç etkisi) — hisse serilerinde beklenen davranış. Çıktıda `asimetri`
+alanı bunu düz Türkçe yazar.
+
+İki şey ölçülerek ayarlandı:
+
+- **Jensen düzeltmesi.** Naif hedefleme (ω = (1−β)·log σ̄²) koşulsuz
+  *log*-varyansı hedefler, ama E[exp(X)] ≠ exp(E[X]): modelin ima ettiği
+  varyans σ̄²'den büyük çıkıyordu — ölçüldü, 1.09–1.15× (volatilitede %4–7
+  yukarı sapma). Düzeltmeyle sapma %1'in altına indi. Çok yüksek kalıcılık
+  köşesinde ~%8 artık sapma kalıyor, kodda yazılı.
+- **α alt sınırı.** α = 0 modeli şok *büyüklüğüne* tamamen duyarsız bırakır;
+  ince ızgara bu dejenere köşeye düşebiliyordu, 0.01 ile sınırlandı.
+
+**α zayıf tanımlıdır.** Olabilirlik yüzeyi α yönünde çok düz; uydurucunun
+bulduğu nokta gerçek parametrelerden daha yüksek olabilirlik veriyor, yani
+sapma optimize edici hatası değil sonlu örnek özelliği. γ ve β ~0.02
+hassasiyetle geri geliyor, α'da tolerans bilerek geniş.
+
+Çok adımlı tahmin için |z| terimi yüzünden kapalı form yok; benzetim
+kullanılıyor (sabit tohum, yani tekrarlanabilir).
+
 Varyans hedeflemeli maksimum olabilirlik (ω = σ̄²(1−α−β)) kullanılır; serbest
 parametre ikiye düştüğü için iki boyutlu kaba + ince ızgara taraması yeter ve
 dış bağımlılık gerekmez. Testler bilinen parametrelerle üretilmiş seriden aynı

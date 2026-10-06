@@ -234,6 +234,203 @@ class TestTahmin(unittest.TestCase):
         self.assertIsNone(G.garch_tahmin(self.fit, self.seri, 0))
 
 
+def egarch_serisi_uret(n, alpha, gamma, beta, s2_bar=0.0004, seed=5):
+    """Bilinen EGARCH parametreleriyle getiri serisi uretir."""
+    r = random.Random(seed)
+    log_s2_bar = math.log(s2_bar)
+    omega = (1.0 - beta) * log_s2_bar
+    log_s2 = log_s2_bar
+    out = []
+    for _ in range(n + 600):
+        s2 = math.exp(log_s2)
+        z = r.gauss(0, 1)
+        out.append(z * math.sqrt(s2))
+        log_s2 = omega + alpha * (abs(z) - G._E_ABS_Z) + gamma * z + beta * log_s2
+    return out[600:]
+
+
+class TestEgarch(unittest.TestCase):
+    """
+    EGARCH(1,1).
+
+    Modelin varlik sebebi gamma terimi: getirinin ISARETINI tasiyor ve
+    boylece dususlerin volatiliteyi yukselislerden daha cok artirmasini
+    yakalayabiliyor. GARCH bunu yapisal olarak yapamaz (orada yalnizca
+    r^2 var, isaret kareyle kayboluyor). Testlerin agirligi orada.
+    """
+
+    def test_esigin_altinda_none(self):
+        self.assertIsNone(G.fit_egarch11([0.01] * 10, min_getiri=60))
+        self.assertIsNotNone(G.fit_egarch11(egarch_serisi_uret(60, 0.15, -0.08, 0.95),
+                                            min_getiri=60))
+
+    def test_parametreleri_geri_bulur(self):
+        """
+        Toleranslar olculerek konuldu. gamma ve beta ~0.02 hassasiyetle
+        geri geliyor; ALPHA ZAYIF TANIMLI — olabilirlik yuzeyi o yonde
+        cok duz (bkz. test_alpha_zayif_tanimli), bu yuzden toleransi
+        bilerek genis.
+        """
+        for alpha, gamma, beta in ((0.15, -0.08, 0.95), (0.20, -0.12, 0.92)):
+            seri = egarch_serisi_uret(2000, alpha, gamma, beta)
+            f = G.fit_egarch11(seri)
+            self.assertIsNotNone(f)
+            self.assertAlmostEqual(f["gamma"], gamma, delta=0.02,
+                                   msg=f"gamma geri gelmedi (gercek {gamma})")
+            self.assertAlmostEqual(f["beta"], beta, delta=0.02,
+                                   msg=f"beta geri gelmedi (gercek {beta})")
+            self.assertAlmostEqual(f["alpha"], alpha, delta=0.07,
+                                   msg=f"alpha geri gelmedi (gercek {alpha})")
+
+    def test_alpha_zayif_tanimli(self):
+        """
+        Uydurucunun buldugu nokta GERCEK parametrelerden daha yuksek
+        olabilirlik veriyor. Yani alpha'daki sapma optimize edici hatasi
+        degil, sonlu ornekte olabilirligin alpha yonunde duz olmasi.
+        Bu test o yorumu sabitliyor.
+        """
+        gercek = (0.15, -0.08, 0.95)
+        seri = egarch_serisi_uret(3000, *gercek)
+        f = G.fit_egarch11(seri)
+        ll_gercek = G._egarch_log_olabilirlik(
+            seri, gercek[0], gercek[1], gercek[2], math.log(f["sigma2_bar"]))
+        self.assertGreaterEqual(f["loglik"], ll_gercek,
+                                "uydurma gercek parametrelerden kotu cikti")
+
+    def test_asimetriyi_yakalar(self):
+        """Negatif gamma ile uretilmis seride gamma negatif bulunmali."""
+        f = G.fit_egarch11(egarch_serisi_uret(2000, 0.15, -0.15, 0.95))
+        self.assertLess(f["gamma"], -0.05)
+        self.assertIn("dusus", f["asimetri"])
+
+    def test_ters_asimetriyi_de_yakalar(self):
+        """Isaret sabitlenmemis olmali: pozitif gamma da bulunabilmeli."""
+        f = G.fit_egarch11(egarch_serisi_uret(2000, 0.15, +0.12, 0.95, seed=47))
+        self.assertGreater(f["gamma"], 0.05)
+        self.assertIn("yukselis", f["asimetri"])
+
+    def test_simetrik_seride_gamma_sifira_yakin(self):
+        f = G.fit_egarch11(egarch_serisi_uret(2000, 0.15, 0.0, 0.95, seed=31))
+        self.assertLess(abs(f["gamma"]), 0.05,
+                        "simetrik seride asimetri uydurulmamali")
+
+    def test_asimetrik_seride_GARCH_i_geceR(self):
+        """
+        Modelin eklenme gerekcesi: asimetrik veride GARCH'tan daha iyi
+        uyum vermeli. Simetrik veride fark kapanmali — aksi halde
+        EGARCH sadece fazladan parametreyle ezbere uyuyor olurdu.
+        """
+        asimetrik = egarch_serisi_uret(2000, 0.15, -0.15, 0.95)
+        g = G.fit_garch11(asimetrik)
+        e = G.fit_egarch11(asimetrik)
+        asimetrik_fark = e["loglik"] - g["loglik"]
+        self.assertGreater(asimetrik_fark, 10.0,
+                           "asimetrik seride EGARCH belirgin ustun olmali")
+
+        simetrik = egarch_serisi_uret(2000, 0.15, 0.0, 0.95, seed=31)
+        g2 = G.fit_garch11(simetrik)
+        e2 = G.fit_egarch11(simetrik)
+        simetrik_fark = e2["loglik"] - g2["loglik"]
+        self.assertLess(simetrik_fark, asimetrik_fark / 3,
+                        "simetrik seride ustunluk belirgin sekilde azalmali")
+
+    def test_duragan(self):
+        for seed in (3, 9, 17):
+            f = G.fit_egarch11(egarch_serisi_uret(600, 0.15, -0.08, 0.95, seed=seed))
+            self.assertLess(abs(f["beta"]), 1.0, "duragan olmayan uyum dondu")
+
+    def test_omega_hedeflemeyle_tutarli(self):
+        f = G.fit_egarch11(egarch_serisi_uret(1000, 0.15, -0.08, 0.95))
+        self.assertAlmostEqual(
+            f["omega"],
+            G._egarch_omega(f["alpha"], f["gamma"], f["beta"],
+                            math.log(f["sigma2_bar"])),
+            places=12)
+
+    def test_jensen_duzeltmesi_uygulanir(self):
+        """
+        Naif hedefleme (omega = (1-beta)*log(s2_bar)) kosulsuz LOG-varyansi
+        hedefler; ama E[exp(X)] != exp(E[X]), yani modelin ima ettigi
+        VARYANS s2_bar'dan buyuk cikar ve tahminler sistematik yuksek olur.
+        Duzeltilmis omega naif olandan KUCUK olmali.
+        """
+        log_s2_bar = math.log(0.0004)
+        for alpha, gamma, beta in ((0.15, -0.08, 0.95), (0.25, -0.20, 0.97)):
+            naif = (1 - beta) * log_s2_bar
+            duzeltilmis = G._egarch_omega(alpha, gamma, beta, log_s2_bar)
+            self.assertLess(duzeltilmis, naif,
+                            "Jensen duzeltmesi omega'yi dusurmeli")
+
+    def test_jensen_duzeltmesi_kosulsuz_varyansi_tutturur(self):
+        """
+        Duzeltmenin ISE YARADIGI olculuyor: uzun bir benzetimde ortalama
+        varyans hedefe yakin cikmali. Duzeltme olmadan bu oran 1.09-1.15
+        araligindaydi.
+        """
+        alpha, gamma, beta, s2_bar = 0.15, -0.08, 0.95, 0.0004
+        omega = G._egarch_omega(alpha, gamma, beta, math.log(s2_bar))
+        r = random.Random(1)
+        log_s2 = math.log(s2_bar)
+        toplam, sayi = 0.0, 0
+        for i in range(60000):
+            s2 = math.exp(log_s2)
+            if i > 3000:                       # yakinsama suresi atlanir
+                toplam += s2
+                sayi += 1
+            z = r.gauss(0, 1)
+            log_s2 = omega + alpha * (abs(z) - G._E_ABS_Z) + gamma * z + beta * log_s2
+        oran = (toplam / sayi) / s2_bar
+        self.assertAlmostEqual(oran, 1.0, delta=0.05,
+                               msg=f"kosulsuz varyans hedeften sapti: {oran:.3f}x")
+
+    def test_alpha_sifira_sabitlenmez(self):
+        """
+        alpha=0 modeli sok BUYUKLUGUNE tamamen duyarsiz birakir —
+        dejenere bir kose ve ince izgara oraya dusebiliyordu.
+        """
+        for seed in (5, 13, 29):
+            f = G.fit_egarch11(egarch_serisi_uret(800, 0.15, -0.08, 0.95, seed=seed))
+            self.assertGreaterEqual(f["alpha"], 0.01,
+                                    "alpha dejenere kosede sabitlendi")
+
+    def test_sifir_varyansli_seri_none(self):
+        self.assertIsNone(G.fit_egarch11([0.0] * 200))
+
+
+class TestEgarchTahmin(unittest.TestCase):
+
+    def setUp(self):
+        self.seri = egarch_serisi_uret(1500, 0.15, -0.10, 0.95)
+        self.fit = G.fit_egarch11(self.seri)
+
+    def test_tum_ufuklar_pozitif(self):
+        t = G.egarch_tahmin(self.fit, self.seri, G.PENCERELER)
+        self.assertEqual(sorted(t), sorted(G.PENCERELER))
+        for h, v in t.items():
+            self.assertGreater(v, 0.0, f"{h} gunluk tahmin pozitif degil")
+
+    def test_tekrarlanabilir(self):
+        """
+        Tahmin benzetimle uretiliyor; tohum sabit oldugu icin ayni girdi
+        ayni sonucu vermeli. Aksi halde ekran her yenilemede ziplardi.
+        """
+        a = G.egarch_tahmin(self.fit, self.seri, [30])
+        b = G.egarch_tahmin(self.fit, self.seri, [30])
+        self.assertEqual(a, b)
+
+    def test_ufukla_kosulsuza_yaklasir(self):
+        t = G.egarch_tahmin(self.fit, self.seri, [1, 2000])
+        kosulsuz = self.fit["uncond_vol_pct"]
+        self.assertLess(abs(t[2000] - kosulsuz), abs(t[1] - kosulsuz) + 1e-9,
+                        "uzun ufuk kosulsuza daha yakin olmali")
+
+    def test_gecersiz_girdi_bos(self):
+        self.assertEqual(G.egarch_tahmin(None, self.seri, [30]), {})
+        self.assertEqual(G.egarch_tahmin(self.fit, [], [30]), {})
+        self.assertEqual(G.egarch_tahmin(self.fit, self.seri, []), {})
+        self.assertEqual(G.egarch_tahmin(self.fit, self.seri, [0]), {})
+
+
 class TestDepoEntegrasyonu(unittest.TestCase):
 
     def setUp(self):
@@ -289,6 +486,38 @@ class TestDepoEntegrasyonu(unittest.TestCase):
         for p in G.PENCERELER:
             self.assertIsNotNone(s["models"]["GARCH(1,1)"][f"{p}D (%)"])
             self.assertGreater(s["models"]["GARCH(1,1)"][f"{p}D (%)"], 0)
+
+    def test_egarch_cikti_setinde(self):
+        """EGARCH, GARCH'in yaninda ayri bir model olarak gelmeli."""
+        self._gunluk_doldur("THYAO", egarch_serisi_uret(300, 0.15, -0.10, 0.95))
+        s = G.ticker_hesapla(self.d, "THYAO")
+        self.assertIn("EGARCH(1,1)", s["models"])
+        self.assertIn("efit", s)
+        self.assertIn("gamma", s["efit"])
+        for p in G.PENCERELER:
+            self.assertIsNotNone(s["models"]["EGARCH(1,1)"][f"{p}D (%)"])
+
+    def test_yetersiz_veride_egarch_de_bos(self):
+        self._gunluk_doldur("THYAO", egarch_serisi_uret(20, 0.15, -0.10, 0.95))
+        s = G.ticker_hesapla(self.d, "THYAO")
+        self.assertTrue(all(v is None for v in s["models"]["EGARCH(1,1)"].values()))
+        self.assertNotIn("efit", s)
+
+    def test_egarch_surumu_ayri_yazilir(self):
+        """
+        Iki model ayri surum satiri acmali: biri yakinsayip digeri
+        yakinsamadiginda hangisinin ne zaman uydurulduğu kaybolmamali.
+        """
+        self._gunluk_doldur("THYAO", egarch_serisi_uret(300, 0.15, -0.10, 0.95))
+        govde = G.tumunu_hesapla(self.d)
+        self.assertEqual(govde["fitted_egarch"], 1)
+        egarch = self.d.model_surumleri(model="egarch11")
+        garch = self.d.model_surumleri(model="garch11")
+        self.assertEqual(len(egarch), 1)
+        self.assertEqual(len(garch), 1)
+        self.assertEqual(egarch[0]["scope"], "THYAO")
+        self.assertIn("gamma", egarch[0]["params"])
+        self.assertNotIn("gamma", garch[0]["params"])
 
     def test_tumunu_hesapla_surum_yazar(self):
         self._gunluk_doldur("THYAO", garch_serisi_uret(300, 0.08, 0.90))

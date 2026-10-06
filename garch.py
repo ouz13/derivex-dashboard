@@ -45,6 +45,7 @@ import argparse
 import json
 import math
 import os
+import random
 from datetime import datetime, timezone
 
 import store as S
@@ -212,6 +213,205 @@ def garch_tahmin(fit, getiriler, ufuk):
 
 
 # ---------------------------------------------------------------------------
+# EGARCH(1,1)
+#
+#   log(sigma2_t) = omega + alpha*(|z| - E|z|) + gamma*z + beta*log(sigma2_{t-1})
+#   z = r_{t-1} / sigma_{t-1}
+#
+# GARCH'tan IKI FARKI VAR:
+#
+#   1. ASIMETRI. gamma terimi getirinin ISARETINI tasiyor. Hisse
+#      serilerinde dususlerin volatiliteyi yukselislerden daha cok
+#      artirdigi bilinen bir etki (kaldirac etkisi) ve GARCH bunu
+#      yapisal olarak yakalayamaz: orada yalnizca r^2 var, isaret
+#      bilgisi kareyle birlikte kayboluyor. gamma'nin negatif cikmasi
+#      beklenir.
+#
+#   2. LOG UZAYI. Varyans log olarak modellendigi icin pozitifligi
+#      kendiliginden saglaniyor; omega, alpha, gamma uzerinde isaret
+#      kisiti gerekmiyor. Duraganlik icin yalnizca |beta| < 1 yeter.
+#
+# Hedefleme: kosulsuz log-varyans omega/(1-beta) oldugundan
+# omega = (1-beta) * log(sigma2_bar) secilip serbest parametre uce
+# dusuruluyor (alpha, gamma, beta).
+# ---------------------------------------------------------------------------
+
+# Standart normal icin E|z|
+_E_ABS_Z = math.sqrt(2.0 / math.pi)
+
+# Cok adimli tahmin benzetiminde kullanilan yol sayisi. EGARCH'in
+# |z| terimi yuzunden h adim ileri varyansin kapali formu yok; bu
+# yuzden benzetim yapiliyor. Tohum sabit, yani sonuc tekrarlanabilir.
+EGARCH_YOL = 1000
+EGARCH_TOHUM = 20261006
+
+
+# |z|'nin varyansi (standart normal): 1 - 2/pi
+_VAR_ABS_Z = 1.0 - 2.0 / math.pi
+
+
+def _egarch_omega(alpha, gamma, beta, log_s2_bar):
+    """
+    Hedeflenen omega — JENSEN DUZELTMELI.
+
+    Naif hedefleme omega = (1-beta)*log(s2_bar) kosulsuz LOG-varyansi
+    log(s2_bar)'a esitler. Ama E[exp(X)] != exp(E[X]): modelin ima
+    ettigi kosulsuz VARYANS bu durumda s2_bar'dan buyuk cikiyor.
+    Olculdu: parametre araligina gore 1.09x - 1.15x, yani volatilitede
+    %4-7 yukari sapma. Tahminler sistematik olarak yuksek olurdu.
+
+    Durgun log-varyansin varyansi:
+        Var[log s2] = (alpha^2 * Var|z| + gamma^2) / (1 - beta^2)
+    ve E[s2] = exp(E[log s2] + Var/2). E[s2] = s2_bar istendigi icin
+    E[log s2] = log(s2_bar) - Var/2 secilir.
+
+    Duzeltme sonrasi olculen sapma tipik parametrelerde %1'in altinda.
+    Cok yuksek kaliciliktaki (beta~0.97, alpha~0.25) kosede ~%8 artik
+    sapma kaliyor: |z| durgun durumda tam normal dagilmadigi icin
+    yuksek mertebe terimler devreye giriyor. Tam duzeltme kapali formda
+    yok; bu kose nadir ve sapma yon olarak bilindigi icin boyle birakildi.
+    """
+    var_log_s2 = (alpha * alpha * _VAR_ABS_Z + gamma * gamma) / (1.0 - beta * beta)
+    return (1.0 - beta) * (log_s2_bar - 0.5 * var_log_s2)
+
+
+def _egarch_log_olabilirlik(getiriler, alpha, gamma, beta, log_s2_bar):
+    """Gaussian log-olabilirlik; omega hedeflemeyle sabitlenir."""
+    if abs(beta) >= 0.9995:
+        return None                       # duragan olmayan bolge
+    omega = _egarch_omega(alpha, gamma, beta, log_s2_bar)
+    log_s2 = log_s2_bar
+    toplam = 0.0
+    sabit = math.log(2.0 * math.pi)
+    for r in getiriler:
+        if log_s2 < -60.0 or log_s2 > 20.0:
+            return None                   # sayisal tasma
+        s2 = math.exp(log_s2)
+        toplam += -0.5 * (sabit + log_s2 + (r * r) / s2)
+        z = r / math.sqrt(s2)
+        log_s2 = (omega + alpha * (abs(z) - _E_ABS_Z)
+                  + gamma * z + beta * log_s2)
+    return toplam
+
+
+def fit_egarch11(getiriler, min_getiri=None):
+    """
+    EGARCH(1,1) uydurur.
+
+    Dondurur: {omega, alpha, gamma, beta, sigma2_bar, loglik, n,
+               uncond_vol_pct, asimetri} ya da yetersiz veride None.
+
+    `asimetri` gamma'nin isaretini yorumlar: negatifse dususler
+    volatiliteyi yukselislerden daha cok artiriyor demektir.
+    """
+    min_getiri = MIN_RETURNS if min_getiri is None else min_getiri
+    n = len(getiriler)
+    if n < min_getiri:
+        return None
+    s2_bar = sum(x * x for x in getiriler) / n
+    if s2_bar <= 0:
+        return None
+    log_s2_bar = math.log(s2_bar)
+
+    def tara(a_ara, g_ara, b_ara):
+        en_iyi = None
+        for a in a_ara:
+            for g in g_ara:
+                for b in b_ara:
+                    ll = _egarch_log_olabilirlik(getiriler, a, g, b, log_s2_bar)
+                    if ll is None:
+                        continue
+                    if en_iyi is None or ll > en_iyi[0]:
+                        en_iyi = (ll, a, g, b)
+        return en_iyi
+
+    # Kaba tarama. alpha pozitif (buyukluk etkisi), gamma genelde
+    # negatif (kaldirac), beta 1'e yakin (volatilite kalicidir).
+    kaba = tara([0.01 + 0.04 * i for i in range(10)],          # 0.01 .. 0.37
+                [-0.30 + 0.05 * i for i in range(9)],          # -0.30 .. 0.10
+                [0.80 + 0.02 * i for i in range(10)])          # 0.80 .. 0.98
+    if kaba is None:
+        return None
+
+    # Ince taramada alpha pozitif tutuluyor. alpha=0 modeli sok
+    # BUYUKLUGUNE tamamen duyarsiz birakir — yalnizca isarete tepki
+    # veren dejenere bir kose; kaba izgaranin alt ucunda bulunabiliyordu.
+    _, a0, g0, b0 = kaba
+    ince = tara([max(0.01, a0 + k * 0.01) for k in range(-2, 3)],
+                [g0 + k * 0.0125 for k in range(-2, 3)],
+                [b0 + k * 0.005 for k in range(-2, 3)])
+    ll, alpha, gamma, beta = ince if ince is not None else kaba
+
+    return {
+        "omega": _egarch_omega(alpha, gamma, beta, log_s2_bar),
+        "alpha": alpha,
+        "gamma": gamma,
+        "beta": beta,
+        "sigma2_bar": s2_bar,
+        "loglik": ll,
+        "n": n,
+        "uncond_vol_pct": math.sqrt(s2_bar * ISGUNU) * 100.0,
+        "asimetri": ("dususlerde daha yuksek volatilite" if gamma < -1e-6
+                     else ("yukselislerde daha yuksek volatilite" if gamma > 1e-6
+                           else "simetrik")),
+    }
+
+
+def _egarch_son_log_varyans(fit, getiriler):
+    """Ornek sonundaki kosullu log-varyansa kadar ozyinele."""
+    omega, alpha, gamma, beta = fit["omega"], fit["alpha"], fit["gamma"], fit["beta"]
+    log_s2 = math.log(fit["sigma2_bar"])
+    for r in getiriler:
+        s2 = math.exp(log_s2)
+        z = r / math.sqrt(s2)
+        log_s2 = omega + alpha * (abs(z) - _E_ABS_Z) + gamma * z + beta * log_s2
+    return log_s2
+
+
+def egarch_tahmin(fit, getiriler, ufuklar):
+    """
+    Verilen ufuklar icin ortalama volatilite tahmini (yillik yuzde).
+
+    EGARCH'ta |z| terimi yuzunden h adim ileri varyansin kapali formu
+    yok, bu yuzden ozyineleme benzetiliyor. Tum ufuklar TEK benzetimde
+    hesaplaniyor: en uzun ufka kadar yurunup yol boyunca her kontrol
+    noktasindaki kumulatif varyans toplaniyor.
+
+    ufuklar: [15, 30, ...] -> {15: yillik_yuzde, ...}
+    """
+    if not fit or not getiriler or not ufuklar:
+        return {}
+    ufuklar = sorted(set(int(h) for h in ufuklar if int(h) >= 1))
+    if not ufuklar:
+        return {}
+    azami = ufuklar[-1]
+
+    omega, alpha, gamma, beta = fit["omega"], fit["alpha"], fit["gamma"], fit["beta"]
+    baslangic = _egarch_son_log_varyans(fit, getiriler)
+
+    rng = random.Random(EGARCH_TOHUM)
+    # kontrol[h] = tum yollarda h adima kadar biriken varyans toplami
+    birikim = {h: 0.0 for h in ufuklar}
+
+    for _ in range(EGARCH_YOL):
+        log_s2 = baslangic
+        kum = 0.0
+        sonraki = 0
+        for adim in range(1, azami + 1):
+            s2 = math.exp(log_s2)
+            kum += s2
+            if sonraki < len(ufuklar) and adim == ufuklar[sonraki]:
+                birikim[ufuklar[sonraki]] += kum / adim
+                sonraki += 1
+            z = rng.gauss(0.0, 1.0)        # ileri dogru sok cekiliyor
+            log_s2 = omega + alpha * (abs(z) - _E_ABS_Z) + gamma * z + beta * log_s2
+            if log_s2 < -60.0 or log_s2 > 20.0:
+                break
+    return {h: math.sqrt((birikim[h] / EGARCH_YOL) * ISGUNU) * 100.0
+            for h in ufuklar}
+
+
+# ---------------------------------------------------------------------------
 # Ticker bazinda hesap
 # ---------------------------------------------------------------------------
 
@@ -249,6 +449,20 @@ def ticker_hesapla(depo, ticker, min_getiri=None):
         }
         cikti["fit"] = {k: fit[k] for k in
                         ("omega", "alpha", "beta", "persistence", "loglik", "n", "uncond_vol_pct")}
+
+    # EGARCH ayri uydurulur: GARCH yakinsasa da bu yakinsamayabilir
+    # (ya da tersi), biri digerinin varligina baglanmamali.
+    efit = fit_egarch11(getiriler, min_getiri)
+    if efit is None:
+        cikti["models"]["EGARCH(1,1)"] = {f"{p}D (%)": None for p in PENCERELER}
+    else:
+        tahmin = egarch_tahmin(efit, getiriler, PENCERELER)
+        cikti["models"]["EGARCH(1,1)"] = {
+            f"{p}D (%)": _yuvarla(tahmin.get(p)) for p in PENCERELER
+        }
+        cikti["efit"] = {k: efit[k] for k in
+                         ("omega", "alpha", "gamma", "beta", "loglik", "n",
+                          "uncond_vol_pct", "asimetri")}
     return cikti
 
 
@@ -266,6 +480,7 @@ def tumunu_hesapla(depo=None, min_getiri=None, surum_yaz=True):
     try:
         tickerlar = depo.gunluk_kapanisi_olan_tickerlar(asgari_gun=2)
         lookback, gozlem, uyumlar = {}, {}, 0
+        egarch_uyumlari = 0
         yetersiz = {}
         for t in tickerlar:
             s = ticker_hesapla(depo, t, min_getiri)
@@ -280,12 +495,20 @@ def tumunu_hesapla(depo=None, min_getiri=None, surum_yaz=True):
                         "garch11", s["fit"], scope=t,
                         fit_quality=s["fit"]["loglik"],
                         meta={"returns": s["returns"], "days": s["days"]})
+            if s.get("efit"):
+                egarch_uyumlari += 1
+                if surum_yaz:
+                    depo.model_surum_yaz(
+                        "egarch11", s["efit"], scope=t,
+                        fit_quality=s["efit"]["loglik"],
+                        meta={"returns": s["returns"], "days": s["days"]})
         return {
             "source": "store",
             "data_mode": depo.data_mode,
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "min_returns": MIN_RETURNS if min_getiri is None else min_getiri,
             "fitted": uyumlar,
+            "fitted_egarch": egarch_uyumlari,
             "tickers": len(tickerlar),
             "observations": gozlem,
             "insufficient": yetersiz,

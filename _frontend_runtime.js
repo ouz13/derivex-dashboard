@@ -1427,17 +1427,22 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
           let discoveredModels = modelsFromPayload.slice();
 
           if (discoveredModels.length === 0) {
+            // Model listesi TUM lookback'lerin birlesimi olmali.
+            // Onceden ilk dolu lookback'te durup break ediliyordu; 4Y
+            // (duragan dosya) once geldigi icin depodan hesaplanan
+            // modeller (EGARCH, EWMA, Realized) menude hic gorunmuyordu.
+            const gorulen = [];
             for (const lb of lookbackKeys) {
               const lbMap = raw.lookbacks[lb] || {};
               for (const ticker of Object.keys(lbMap)) {
-                const tickerModels = lbMap[ticker] && typeof lbMap[ticker] === 'object' ? Object.keys(lbMap[ticker]) : [];
-                if (tickerModels.length > 0) {
-                  discoveredModels = tickerModels;
-                  break;
+                const tm = lbMap[ticker];
+                if (!tm || typeof tm !== 'object') continue;
+                for (const m of Object.keys(tm)) {
+                  if (gorulen.indexOf(m) === -1) gorulen.push(m);
                 }
               }
-              if (discoveredModels.length > 0) break;
             }
+            discoveredModels = gorulen;
           }
 
           return {
@@ -1605,6 +1610,9 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
           if (window.__rvForecastBundle.mode === 'multi') {
             ensureSelectOptions(lookbackEl, window.__rvForecastBundle.lookbackKeys, 'rvSelectedLookback');
             ensureSelectOptions(modelEl, window.__rvForecastBundle.models, 'rvSelectedModel');
+            // Ilk yuklemede de secili lookback'e gore suz: aksi halde
+            // menude o lookback'te olmayan modeller duruyor.
+            modelSecenekleriniTazele();
           } else {
             ensureSelectOptions(lookbackEl, ['Default'], 'rvSelectedLookback');
             ensureSelectOptions(modelEl, window.__rvForecastBundle.models.length ? window.__rvForecastBundle.models : ['GARCH(1,1)'], 'rvSelectedModel');
@@ -1659,9 +1667,37 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         });
       }
 
+      // Bir lookback'te hangi modeller var? Duragan dosya ile depodan
+      // hesaplanan kume ayni degil (depoda EGARCH var, duragan dosyada
+      // Heston CIR var), bu yuzden menu secili lookback'e gore suzuluyor.
+      function lookbackModelleri(bundle, lookbackKey) {
+        if (!bundle || bundle.mode !== 'multi') return (bundle && bundle.models) || [];
+        const lbMap = bundle.lookbacks[lookbackKey] || {};
+        const out = [];
+        for (const ticker of Object.keys(lbMap)) {
+          const tm = lbMap[ticker];
+          if (!tm || typeof tm !== 'object') continue;
+          for (const m of Object.keys(tm)) if (out.indexOf(m) === -1) out.push(m);
+        }
+        return out.length ? out : (bundle.models || []);
+      }
+
+      function modelSecenekleriniTazele() {
+        if (!modelEl || !lookbackEl || !window.__rvForecastBundle) return;
+        const uygun = lookbackModelleri(window.__rvForecastBundle, lookbackEl.value);
+        if (!uygun.length) return;
+        const oncekiSecim = modelEl.value;
+        ensureSelectOptions(modelEl, uygun, 'rvSelectedModel');
+        // Onceki secim bu lookback'te yoksa ACIKCA ilkine gecilir;
+        // aksi halde etiket bir modeli, tablo baskasini gosterirdi.
+        if (uygun.indexOf(oncekiSecim) !== -1) modelEl.value = oncekiSecim;
+        else modelEl.value = uygun[0];
+      }
+
       if (lookbackEl) {
         lookbackEl.addEventListener('change', () => {
           try { localStorage.setItem('rvSelectedLookback', lookbackEl.value || ''); } catch (_) {}
+          modelSecenekleriniTazele();
           if (window.__rvCurrentRows) renderTable(window.__rvCurrentRows, window.__rvForecastBundle);
           if (statusEl) {
             const selectedModel = modelEl && modelEl.value ? modelEl.value : '-';
