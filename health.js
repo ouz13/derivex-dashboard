@@ -156,6 +156,23 @@
                            : 'fitted ' + yasMetni(eSn) + ' ago',
     });
 
+    // --- API kimlik dogrulama ---
+    // Kapali olmasi bir sey BOZMAZ, ama isletme riskidir ve gorunur
+    // olmali. Mock modda gelistirme icin normal; CANLI modda uclarin
+    // acik olmasi baska bir sey.
+    if (girdi.authConfigured !== undefined) {
+      checks.push({
+        name: 'API authentication', age_s: null,
+        status: girdi.authConfigured ? 'healthy' : (girdi.mockMu ? 'healthy' : 'degraded'),
+        detail: girdi.authConfigured
+          ? (girdi.authKeyCount || 0) + ' key(s) configured'
+            + (girdi.authAllowLocal ? ' · local requests exempt' : '')
+          : (girdi.mockMu
+              ? 'disabled — fine for MOCK, set API_KEYS before exposing'
+              : 'DISABLED in LIVE mode — /api/* is open; set API_KEYS'),
+      });
+    }
+
     var genel = checks.reduce(function (acc, c) { return kotuOlan(acc, c.status); }, 'healthy');
 
     return {

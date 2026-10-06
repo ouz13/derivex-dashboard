@@ -74,6 +74,7 @@ IdealData REST ─────────────────────�
 | `model_fallback.js` | Kalibrasyon başarısızlığında fallback zinciri |
 | `health.js` | Servis sağlığı değerlendirmesi ve alarm kararı (`/health`) |
 | `watchlist.js` | İzleme listesi |
+| `auth.js` | API anahtarı doğrulama ve hız sınırı |
 | `backtest.py` | Kayan kökenli çapraz doğrulama |
 | `bench_stream.py` | Veri boru hattı kapasite ölçümü |
 | `garch.py` | Depodaki geçmişten gerçekleşmiş volatilite ve GARCH(1,1) |
@@ -588,3 +589,38 @@ yazar, uydurma bir sayı göstermez.
 ## İşletim
 
 Günlük işletim, arıza senaryoları ve bakım için → **[RUNBOOK.md](RUNBOOK.md)**
+
+## API erişimi
+
+`/api/*` uçlarının tamamı açıktı — portföy pozisyonları, fiyatlama kayıtları,
+denetim izi dahil. "Kurumsal veri servisi" iddiasıyla en çelişen eksik buydu.
+
+```bash
+node auth.js --generate          # anahtar üret, .env'e ekle
+curl -H "X-API-Key: <anahtar>" http://sunucu:5173/api/spot?all=1
+```
+
+`401` anahtar yok · `403` geçersiz · `429` hız sınırı (`Retry-After` ile).
+
+**Ne yapar, ne yapmaz.** Döküman OAuth2 istiyor; burada yapılan onun bir **alt
+kümesi**: API anahtarı + anahtar başına hız sınırı. Fark şu: OAuth2 jeton
+süresi, yenileme ve yetki kapsamı getirir — burada anahtar süresizdir ve tüm
+uçlara erişir. Tam OAuth2 ayrı bir iş olarak duruyor.
+
+**Üç karar:**
+
+- **Yerel istekler muaf** (varsayılan). Veri köprüsü ve arayüz aynı makineden
+  konuşuyor; tehdit modeli "ağdaki başka biri uçlara vuruyor", işletmecinin
+  kendi makinesi değil. `AUTH_ALLOW_LOCAL=0` ile kaldırılır.
+- **Anahtar tanımlı değilse doğrulama kapalıdır** ve `/health` bunu bildirir.
+  Sessizce açık bırakmak yerine görünür bırakmak: geliştirme akışını bozmadan
+  eksiği ortada tutuyor. Canlı modda kapalıysa sağlık durumu `degraded` olur.
+- **Yalnızca `/api/*` korunur.** Tarayıcı gezinmesi özel başlık taşıyamadığı
+  için HTML sayfaları açıktır. Dışa açarken önüne TLS ve sayfa doğrulaması
+  yapan ters vekil sunucu gerekir.
+
+**Hız sınırı kayan penceredir.** Sabit pencerede 59. saniyede limit kadar,
+61. saniyede yine limit kadar istek geçerdi — yani sınırın iki katı. Testi var.
+
+`X-Forwarded-For` **dikkate alınmaz**: istemcinin gönderdiği bir başlıktır ve
+güvenilen bir vekil sunucu olmadan ona bakmak doğrudan atlatma yolu açardı.

@@ -104,6 +104,18 @@ const HEALTH_STALE_SEC = Number(process.env.HEALTH_STALE_SEC) || 900;
 const HEALTH_POLL_SEC = Number(process.env.HEALTH_POLL_SEC) || 30;
 const HEALTH_CONFIRM = Number(process.env.HEALTH_CONFIRM) || 2;
 const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL || '';
+
+// --- API kimlik dogrulama ---
+// Anahtar tanimli degilse dogrulama KAPALIDIR ve /health bunu bildirir.
+// Sessizce acik birakmak yerine gorunur birakmak: gelistirme akisini
+// bozmadan eksigi ortada tutuyor.
+const AUTH = require('./auth.js');
+const API_KEYS = AUTH.anahtarlariCoz(process.env.API_KEYS || '');
+const AUTH_ALLOW_LOCAL = process.env.AUTH_ALLOW_LOCAL !== '0';
+const RATE_LIMIT_RPM = Number(process.env.RATE_LIMIT_RPM) || 600;
+const hizSiniri = new AUTH.HizSiniri(RATE_LIMIT_RPM);
+// Kayan pencere listeleri bellekte birikmesin
+setInterval(() => hizSiniri.temizle(), 60000).unref?.();
 const ALERTS_FILE = path.join(__dirname, 'health_alerts.jsonl');
 const ALERTS_MAX = 200;
 
@@ -172,6 +184,9 @@ function saglikRaporu() {
     egriTs: serverState.yieldCurve ? serverState.yieldCurve.ts : null,
     mockMu: MOCK_MODE,
     esikler: { taze: HEALTH_FRESH_SEC, bayat: HEALTH_STALE_SEC },
+    authConfigured: API_KEYS.size > 0,
+    authKeyCount: API_KEYS.size,
+    authAllowLocal: AUTH_ALLOW_LOCAL,
   });
 }
 
@@ -4717,6 +4732,27 @@ const xlsxBundlePath = path.join(__dirname, 'node_modules', 'xlsx', 'dist', 'xls
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
+
+  // Kimlik dogrulama her seyden ONCE. Korunan yollar /api/* ile
+  // sinirli: sayfalar ve statik dosyalar acik kaliyor (bkz. RUNBOOK,
+  // "bilinen kisitlar") cunku tarayici gezinmesi ozel baslik tasiyamaz.
+  const yetki = AUTH.kontrolEt(req, url.pathname, {
+    anahtarlar: API_KEYS,
+    yerelMuaf: AUTH_ALLOW_LOCAL,
+    hizSiniri,
+  });
+  if (!yetki.izin) {
+    const basliklar = { 'Content-Type': 'application/json; charset=utf-8' };
+    if (yetki.durum === 401) basliklar['WWW-Authenticate'] = 'Bearer realm="derivex"';
+    if (yetki.retryAfter) basliklar['Retry-After'] = String(yetki.retryAfter);
+    res.writeHead(yetki.durum, basliklar);
+    res.end(JSON.stringify({ ok: false, error: yetki.sebep }));
+    return;
+  }
+  if (yetki.kalan !== undefined && Number.isFinite(yetki.kalan)) {
+    res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT_RPM));
+    res.setHeader('X-RateLimit-Remaining', String(yetki.kalan));
+  }
 
   if (url.pathname === '/xlsx.js') {
     try {

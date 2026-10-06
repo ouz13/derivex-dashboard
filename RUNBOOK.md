@@ -213,12 +213,45 @@ dosya silinmemeli; inceleme için saklayın.
 | `ALERT_WEBHOOK_URL` | — | Durum değişiminde POST edilecek adres |
 | `CURVE_REFRESH_SEC` | `300` | Eğri kalibrasyon aralığı |
 | `GARCH_REFRESH_SEC` | `900` | GARCH yeniden hesap aralığı |
+| `API_KEYS` | — | `ad1:anahtar1,ad2:anahtar2`. Boşsa doğrulama kapalı |
+| `AUTH_ALLOW_LOCAL` | `1` | `0` ile yerel istekler de anahtar ister |
+| `RATE_LIMIT_RPM` | `600` | Anahtar başına dakikadaki istek |
 | `STORE_DB` | `derivex.db` | Veritabanı yolu |
 | `STORE_ENABLED` | `1` | `0` ile kalıcılık kapatılır |
 | `GARCH_MIN_RETURNS` | `60` | GARCH için asgari getiri |
 
 Kimlik bilgileri kodda gömülüdür; `.env` ya da ortam değişkeni ezer
 (`.env.example`).
+
+---
+
+## 4b. API erişimi
+
+Anahtar üretme:
+
+```bash
+node auth.js --generate
+```
+
+Çıktıyı `.env`'e ekleyin. Birden fazla tüketici için virgülle ayırın.
+
+```bash
+curl -H "X-API-Key: <anahtar>" http://sunucu:5173/api/spot?all=1
+curl -H "Authorization: Bearer <anahtar>" http://sunucu:5173/api/audit
+```
+
+| Yanıt | Anlamı |
+|---|---|
+| `401` | Anahtar gönderilmemiş |
+| `403` | Anahtar geçersiz |
+| `429` | Hız sınırı aşıldı (`Retry-After` başlığına bakın) |
+
+**Yerel istekler varsayılan olarak muaftır** — veri köprüsü ve arayüz aynı
+makineden konuşuyor. `AUTH_ALLOW_LOCAL=0` ile bu kaldırılır, ama o zaman
+köprünün de anahtar taşıması gerekir.
+
+`/health` her zaman açıktır; kapalı olsaydı konteyner sağlık kontrolü de
+anahtar taşımak zorunda kalırdı.
 
 ---
 
@@ -258,8 +291,12 @@ sayar; `degraded` konteyneri yeniden başlatmaz.
 
 Bunlar arıza değil, bilinen sınırlar:
 
-- **Kimlik doğrulama yok.** `/api/*` uçlarının tamamı açık. Dışa açık bir
-  ağda çalıştırmayın.
+- **Kimlik doğrulama bir alt kümedir.** API anahtarı + hız sınırı var,
+  OAuth2 yok (jeton süresi, yenileme, yetki kapsamı yok). `API_KEYS`
+  tanımlanmazsa doğrulama **kapalıdır** ve `/health` bunu bildirir.
+- **Sayfalar korunmuyor.** Yalnızca `/api/*` korunur; tarayıcı gezinmesi özel
+  başlık taşıyamadığı için HTML sayfaları açıktır. Dışa açarken önüne TLS ve
+  sayfa kimlik doğrulaması yapan bir ters vekil sunucu koyun.
 - **Ölçek sınırı.** Toplu POST sonrası ~24k msg/sn. Daha fazlası için
   mesajlaşma altyapısı gerekir.
 - **Spot olmayan dayanaklar.** Endeks/FX/emtia vadelilerinde ima edilen getiri
