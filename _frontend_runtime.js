@@ -200,6 +200,7 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
   <script src="/xlsx.js"></script>
   <script src="/risk-handler.js"></script>
   <script src="/model-fallback.js"></script>
+  <script src="/watchlist.js"></script>
   <style>
     :root {
       --bg: #f4f5f7;
@@ -1587,7 +1588,18 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         const metrics = ['15D RV', '30D RV', '60D RV', '90D RV', '180D RV'];
         const fcstMetrics = ['15D (%)', '30D (%)', '60D (%)', '90D (%)', '180D (%)'];
 
-        bodyEl.innerHTML = sortedRows.map((row) => {
+        // Izleme listesi suzgeci. Liste bossa suzme yapilmaz; bos
+        // listeyle tabloyu bosaltmak "veri yok" gibi gorunurdu.
+        const yalnizIzlenen = window.__rvYalnizIzlenen && window._izleme
+          && window._izleme.oku().length > 0;
+        const gosterilecek = yalnizIzlenen ? window._izleme.suz(sortedRows, 'Ticker') : sortedRows;
+
+        if (!gosterilecek.length) {
+          renderEmpty('No watched tickers in this table.');
+          return;
+        }
+
+        bodyEl.innerHTML = gosterilecek.map((row) => {
           const ticker = esc(row.Ticker || '-');
           
           // Calculate min/max for this row across all 5 windows
@@ -1608,7 +1620,14 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
             cellsHtml += rvCell + fcstCell;
           }
           
-          return '<tr><td class="rv-ticker">' + ticker + '</td>' + cellsHtml + '</tr>';
+          const izleniyor = window._izleme && window._izleme.izleniyorMu(ticker);
+          const yildiz = '<span class="izleme-yildiz" data-ticker="' + ticker + '"'
+            + ' title="' + (izleniyor ? 'Remove from watchlist' : 'Add to watchlist') + '"'
+            + ' style="cursor:pointer;margin-right:6px;user-select:none;color:'
+            + (izleniyor ? '#f59e0b' : '#cbd5e1') + ';">'
+            + (izleniyor ? '★' : '☆') + '</span>';
+
+          return '<tr><td class="rv-ticker">' + yildiz + ticker + '</td>' + cellsHtml + '</tr>';
         }).join('');
       }
 
@@ -1675,6 +1694,52 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         refreshBtn.addEventListener('click', () => {
           load(true);
         });
+      }
+
+      // --- Izleme listesi ---
+      // Yildiza tiklama olay delegasyonuyla yakalaniyor: tablo her
+      // yeniden cizildiginde dinleyici baglamak gerekmesin.
+      try {
+        window.__rvYalnizIzlenen = localStorage.getItem('rvYalnizIzlenen') === '1';
+      } catch (_) { window.__rvYalnizIzlenen = false; }
+
+      function izlemeDugmesiTazele() {
+        const b = document.getElementById('rvIzlemeBtn');
+        if (!b || !window._izleme) return;
+        const n = window._izleme.oku().length;
+        b.textContent = window.__rvYalnizIzlenen
+          ? 'Watched only (' + n + ')' : 'Watchlist (' + n + ')';
+        b.style.background = window.__rvYalnizIzlenen ? '#0f1728' : '';
+        b.style.color = window.__rvYalnizIzlenen ? '#fff' : '';
+      }
+
+      if (bodyEl) {
+        bodyEl.addEventListener('click', (ev) => {
+          const el = ev.target.closest && ev.target.closest('.izleme-yildiz');
+          if (!el || !window._izleme) return;
+          ev.preventDefault();
+          window._izleme.degistir(el.getAttribute('data-ticker'));
+          izlemeDugmesiTazele();
+          if (window.__rvCurrentRows) renderTable(window.__rvCurrentRows, window.__rvForecastBundle);
+        });
+      }
+
+      const izlemeBtn = document.getElementById('rvIzlemeBtn');
+      if (izlemeBtn) {
+        izlemeBtn.addEventListener('click', () => {
+          if (!window._izleme) return;
+          // Liste bosken suzgeci acmak tabloyu bosaltirdi; bunun yerine
+          // ne yapilmasi gerektigi soyleniyor.
+          if (!window.__rvYalnizIzlenen && window._izleme.oku().length === 0) {
+            if (statusEl) statusEl.textContent = 'Watchlist is empty — click a star to add tickers.';
+            return;
+          }
+          window.__rvYalnizIzlenen = !window.__rvYalnizIzlenen;
+          try { localStorage.setItem('rvYalnizIzlenen', window.__rvYalnizIzlenen ? '1' : '0'); } catch (_) {}
+          izlemeDugmesiTazele();
+          if (window.__rvCurrentRows) renderTable(window.__rvCurrentRows, window.__rvForecastBundle);
+        });
+        izlemeDugmesiTazele();
       }
 
       if (resetSortBtn) {
@@ -3716,6 +3781,7 @@ function toolsContent(toolsTab) {
               <option value="GARCH(1,1)">GARCH(1,1)</option>
             </select>
             <button class="action-btn" type="button" id="rvToggleForecastBtn">Hide Forecasts</button>
+            <button class="action-btn" type="button" id="rvIzlemeBtn" title="Show only watched tickers">Watchlist</button>
             <button class="action-btn" type="button" id="rvResetSortBtn">Reset Sort</button>
             <button class="action-btn" type="button" id="rvRefreshBtn">Refresh</button>
           </div>
@@ -5147,6 +5213,17 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (url.pathname === '/watchlist.js') {
+    try {
+      const data = fs.readFileSync(path.join(__dirname, 'watchlist.js'));
+      res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+      res.end(data);
+    } catch (e) {
+      res.writeHead(404); res.end('watchlist.js not found');
+    }
+    return;
+  }
+
   if (url.pathname === '/health.js') {
     try {
       const data = fs.readFileSync(path.join(__dirname, 'health.js'));
@@ -5178,14 +5255,43 @@ const server = http.createServer(async (req, res) => {
     req.on('end', () => {
       try {
         const payload = JSON.parse(body || '{}');
+        const ts = payload.ts || new Date().toISOString();
+
+        // TOPLU BICIM: {spots: {TICKER: mid, ...}}
+        // Kopru her spot DEGISIMINDE ayri POST atiyordu; olcum pratik
+        // tavani ~2.400 msg/sn gosterdi, oysa ayristirma 829k/sn
+        // yapabiliyor (bkz. bench_stream.py). Vadeli oranlar zaten
+        // toplu gonderiliyordu, spot da ayni yola getirildi.
+        // Tekil bicim geriye donuk uyum icin korunuyor.
+        if (payload.spots && typeof payload.spots === 'object' && !Array.isArray(payload.spots)) {
+          let kabul = 0;
+          for (const [tkrRaw, degerRaw] of Object.entries(payload.spots)) {
+            const tkr = String(tkrRaw || '').toUpperCase();
+            // null, undefined, '' ve [] hepsi Number() ile 0 oluyor.
+            // Fiyati olmayan bir ticker'i 0 diye yazmak sessiz veri
+            // bozulmasidir: ima edilen getiri hesabi spot'a bolduğu
+            // icin sonuc sacmalar. Once tip elenir, sonra cevrilir.
+            if (typeof degerRaw !== 'number'
+                && !(typeof degerRaw === 'string' && degerRaw.trim() !== '')) continue;
+            const deger = Number(degerRaw);
+            if (!tkr || !Number.isFinite(deger)) continue;
+            serverState.spotByTicker[tkr] = { spot_mid: deger, ts };
+            kabul += 1;
+          }
+          serverState.lastPostAt.spot = new Date().toISOString();
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true, stored: kabul }));
+          return;
+        }
+
         const ticker = String(payload.ticker || '').toUpperCase();
         const spotMid = Number(payload.spot_mid);
         if (!ticker || !Number.isFinite(spotMid)) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: false, error: 'ticker and numeric spot_mid are required' }));
+          res.end(JSON.stringify({ ok: false, error: 'ticker and numeric spot_mid, or a spots object, are required' }));
           return;
         }
-        serverState.spotByTicker[ticker] = { spot_mid: spotMid, ts: payload.ts || new Date().toISOString() };
+        serverState.spotByTicker[ticker] = { spot_mid: spotMid, ts };
         serverState.lastPostAt.spot = new Date().toISOString();
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: true, stored: serverState.spotByTicker[ticker] }));

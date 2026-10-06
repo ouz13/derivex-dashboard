@@ -177,6 +177,7 @@ def olc_post(adet=200):
     except Exception as e:
         return None, f"dashboard erisilemiyor ({type(e).__name__}) — once baslatin"
 
+    # --- Tekil yol: her ticker icin ayri istek ---
     sureler = []
     for i in range(adet):
         t0 = time.perf_counter()
@@ -187,15 +188,35 @@ def olc_post(adet=200):
             _bench_temizle()
             return None, f"POST hatasi: {type(e).__name__}: {e}"
         sureler.append((time.perf_counter() - t0) * 1000.0)
+    sureler.sort()
+
+    # --- Toplu yol: ayni sayida ticker, tur basina tek istek ---
+    # Karsilastirmanin adil olmasi icin AYNI sayida ticker guncellemesi
+    # yapiliyor, yalnizca istek sayisi degisiyor.
+    TUR = 20
+    parti = max(1, adet // TUR)
+    toplu_sureler = []
+    for tur in range(TUR):
+        yuk = {f"{BENCH_TICKER}{j}": 100.0 + j * 0.01 for j in range(parti)}
+        t0 = time.perf_counter()
+        try:
+            B.post_spot_batch(yuk, time.strftime("%H:%M:%S.000"))
+        except Exception as e:
+            _bench_temizle()
+            return None, f"toplu POST hatasi: {type(e).__name__}: {e}"
+        toplu_sureler.append((time.perf_counter() - t0) * 1000.0)
 
     _bench_temizle()
-    sureler.sort()
+    toplu_ort = statistics.mean(toplu_sureler)
     return {
         "adet": adet,
         "ortalama_ms": statistics.mean(sureler),
         "ortanca_ms": statistics.median(sureler),
         "p95_ms": sureler[int(0.95 * len(sureler)) - 1],
         "post_sn": 1000.0 / statistics.mean(sureler),
+        "toplu_parti": parti,
+        "toplu_istek_ms": toplu_ort,
+        "toplu_sn": (parti * 1000.0) / toplu_ort if toplu_ort > 0 else float("inf"),
     }, None
 
 
@@ -264,22 +285,28 @@ def main():
         if hata:
             print(f"    atlandi: {hata}")
         else:
-            print(f"    ortanca gecikme   {post['ortanca_ms']:.2f} ms")
-            print(f"    ortalama gecikme  {post['ortalama_ms']:.2f} ms")
-            print(f"    p95 gecikme       {post['p95_ms']:.2f} ms")
-            print(f"    verim             {post['post_sn']:,.0f} POST/sn")
+            print(f"    TEKIL (her ticker icin ayri istek)")
+            print(f"      ortanca gecikme   {post['ortanca_ms']:.2f} ms")
+            print(f"      p95 gecikme       {post['p95_ms']:.2f} ms")
+            print(f"      verim             {post['post_sn']:,.0f} ticker/sn")
+            print()
+            print(f"    TOPLU ({post['toplu_parti']} ticker / istek)")
+            print(f"      istek basina      {post['toplu_istek_ms']:.2f} ms")
+            print(f"      verim             {post['toplu_sn']:,.0f} ticker/sn")
+            kazanc = post['toplu_sn'] / post['post_sn'] if post['post_sn'] else 0
+            print(f"      kazanc            {kazanc:.0f}x")
             print()
             # Asil mesele burasi: kopru her spot DEGISIMINDE bir POST
             # atiyor, yani uygulamadaki tavan bu.
-            if post["post_sn"] < uctan:
-                print(f"    DARBOGAZ: POST yolu ayristirmadan "
-                      f"{uctan/post['post_sn']:.0f}x yavas.")
-                print(f"    Boru hattinin pratik tavani ~{post['post_sn']:,.0f} msg/sn,")
-                print(f"    ayristirma kapasitesi {uctan:,.0f} msg/sn degil.")
-                if post["post_sn"] < HEDEF_MSG_SN:
-                    print(f"    Dokumandaki {HEDEF_MSG_SN:,} msg/sn hedefi bu haliyle "
-                          f"KARSILANMIYOR.")
-                    print(f"    Cozum yonu: spot basina tek POST yerine toplu gonderim.")
+            tavan = max(post["post_sn"], post["toplu_sn"])
+            print(f"    Pratik tavan ~{tavan:,.0f} msg/sn "
+                  f"(ayristirma {uctan:,.0f} msg/sn yapabiliyor).")
+            if tavan >= HEDEF_MSG_SN:
+                print(f"    Dokumandaki {HEDEF_MSG_SN:,} msg/sn hedefi "
+                      f"KARSILANIYOR ({tavan/HEDEF_MSG_SN:.1f}x).")
+            else:
+                print(f"    Dokumandaki {HEDEF_MSG_SN:,} msg/sn hedefi "
+                      f"KARSILANMIYOR.")
     else:
         print("\n  POST yolu olculmedi (--post ile olculur). Ayristirma")
         print("  kapasitesi tek basina pratik tavani GOSTERMEZ: kopru her spot")

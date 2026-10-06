@@ -177,13 +177,14 @@ def bir_tur(maturities, fut_map, durum, sessiz=False):
         spot_bid=spot_bid, spot_ask=spot_ask, fut_bid=fut_bid, fut_ask=fut_ask)
 
     ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    # Toplu gonderim: canli kopru de ayni yolu kullaniyor, mock'un
+    # ondan farkli davranmasi icin sebep yok.
     spot_n = 0
-    for t, mid in spot_mid.items():
-        try:
-            B.post_spot_mid(t, mid, ts)
-            spot_n += 1
-        except Exception:
-            pass
+    try:
+        B.post_spot_batch(spot_mid, ts)
+        spot_n = len(spot_mid)
+    except Exception:
+        pass
     try:
         B.post_futures_rates_batch(rates, maturities, ts)
     except Exception:

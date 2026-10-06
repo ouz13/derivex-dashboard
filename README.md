@@ -503,3 +503,44 @@ söylemez. Ölçüm sonucu:
    değişiminde ayrı bir POST attığı için pratik tavan **~2.400 msg/sn**.
    Dökümandaki 10.000 hedefi bu haliyle **karşılanmıyor**. Çözüm yönü spot
    başına tek POST yerine toplu gönderim — ayrı bir madde.
+
+## İzleme listesi
+
+Realized Vols tablosunda ticker'ları yıldızlayıp **Watchlist** düğmesiyle
+yalnızca izlenenleri gösterebilirsiniz. Tarayıcıda (`localStorage`) tutulur,
+sunucu tarafı değişiklik yok.
+
+İki şey bilinçli:
+
+- **Liste boşken süzme yapılmaz.** Boş bir listeyle tabloyu boşaltmak
+  kullanıcıya "veri yok" gibi görünürdü; bunun yerine ne yapması gerektiği
+  yazılır.
+- **`localStorage` erişilemezse liste yine çalışır.** Gizli pencerede veya
+  site verisi engellendiğinde erişim istisna fırlatıyor; bunun bir tabloyu
+  çökertmesi saçma olurdu, bellek yedeğine düşülür.
+
+## Çapraz doğrulama (model karşılaştırma)
+
+Dört tahmin yöntemi var (Realized, EWMA, GARCH, EGARCH) ama hangisinin daha
+iyi olduğu ölçülmeden bilinmiyordu. Kalibrasyon anındaki RMSE bunu söylemez:
+o, modelin geçmişe ne kadar iyi **uyduğunu** ölçer, ileriyi ne kadar iyi
+**tahmin ettiğini** değil.
+
+```bash
+python3 backtest.py                 # depodaki tüm ticker'lar
+python3 backtest.py --ticker THYAO --ufuk 15
+```
+
+**Kayan köken yöntemi:** köken ileri kayar, her adımda model *yalnızca
+kökene kadarki* veriyle yeniden uydurulur ve sonraki `ufuk` günün
+gerçekleşmiş volatilitesi tahmin edilir. Modelin geleceği görmemesi bu
+yeniden uydurmaya bağlı — tek sefer uydurup tüm geçmişi test etmek sızıntı
+olurdu. Testlerden biri doğrudan bunu sınar: kökenden sonraki veriyi
+değiştirip tahminin değişmediğini doğrular.
+
+**Saf dayanak (naive baseline) karşılaştırmaya dahil:** "son `ufuk` günün
+volatilitesi aynen sürecek". Modeller bunu geçemiyorsa karmaşıklığın bir
+karşılığı yok demektir. Çıktı bunu açıkça yazar.
+
+Yanlılık (bias) sütunu ayrıca gösterilir: RMSE tek başına modelin sistematik
+olarak yüksek mi alçak mı tahmin ettiğini gizler.

@@ -895,6 +895,31 @@ def post_spot_mid(ticker: str, spot_mid: float, ts: str):
     return r.json()
 
 
+def post_spot_batch(spots: dict, ts: str):
+    """
+    Birden cok spot'u TEK istekte gonderir.
+
+    Tekil post_spot_mid her degisim icin ayri bir HTTP istegi atiyordu.
+    Olcum (bench_stream.py) boru hattinin pratik tavanini ~2.400 msg/sn
+    gosterdi; ayni makinede ayristirma 829k/sn yapabiliyor, yani sinir
+    tamamen bu yoldaydi. Vadeli oranlar zaten toplu gonderiliyordu.
+    """
+    if not spots:
+        return None
+    temiz = {str(t).upper(): float(v) for t, v in spots.items() if v is not None}
+    if not temiz:
+        return None
+    r = requests.post(FRONTEND_SPOT_ENDPOINT, json={"spots": temiz, "ts": ts}, timeout=5)
+    r.raise_for_status()
+    _snap_spot.update(temiz)
+    d = _depo()
+    if d is not None:
+        for t, v in temiz.items():
+            d.spot_kaydet(t, v)
+    _snapshot_bastir()
+    return r.json()
+
+
 def post_futures_rates_batch(rates_by_ticker: dict, maturities: list, ts: str):
     global _snap_oranlar
     vadeler = [{"code": m["code"], "label": m["label"], "dtm": m["dtm"]} for m in maturities]
@@ -956,6 +981,8 @@ def run_combined_bridge(run_seconds=RUN_SECONDS, post_interval_sec=2.0):
     fut_bid = {}
     fut_ask = {}
     last_posted_spot_mid = {}
+    bekleyen_spot = {}            # tur sonunda toplu gonderilecek spotlar
+    last_spot_post_ts = 0.0
     sock = connect_and_login()
     buffer = b""
     last_hb = 0.0
@@ -1041,17 +1068,15 @@ def run_combined_bridge(run_seconds=RUN_SECONDS, post_interval_sec=2.0):
                         spot_ask[symbol] = rec["A"]
                         spot_mid[symbol] = smid
                         price_changed = True
+                        # Degisimi hemen GONDERME, biriktir. Her degisim
+                        # icin ayri HTTP istegi boru hattinin tavanini
+                        # ~2.400 msg/sn'ye kilitliyordu; tur basina tek
+                        # istekle bu sinir kalkiyor. Gecikme bedeli en
+                        # fazla bir tur (post_interval_sec), ki vadeli
+                        # oranlar ve opsiyonlar zaten oyle calisiyor.
                         onceki = last_posted_spot_mid.get(symbol)
                         if onceki is None or abs(smid - onceki) > 1e-12:
-                            ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                            try:
-                                post_spot_mid(symbol, smid, ts)
-                                last_posted_spot_mid[symbol] = smid
-                                spot_posted += 1
-                                delta_spot += 1
-                                last_fe_status = "OK"
-                            except Exception as e:
-                                last_fe_status = f"ERR:{type(e).__name__}"
+                            bekleyen_spot[symbol] = smid
                         continue
 
                     # --- Vadeli ---
@@ -1098,6 +1123,21 @@ def run_combined_bridge(run_seconds=RUN_SECONDS, post_interval_sec=2.0):
                     last_fe_status = f"ERR:{type(e).__name__}"
                 last_rates_post_ts = now
                 price_changed = False
+
+            # Birikmis spotlari tek istekte gonder.
+            if bekleyen_spot and (now - last_spot_post_ts >= post_interval_sec):
+                ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                try:
+                    post_spot_batch(bekleyen_spot, ts)
+                    last_posted_spot_mid.update(bekleyen_spot)
+                    spot_posted += len(bekleyen_spot)
+                    delta_spot += len(bekleyen_spot)
+                    bekleyen_spot = {}
+                    last_fe_status = "OK"
+                except Exception as e:
+                    # Birikenler korunuyor: bir sonraki turda tekrar denenir.
+                    last_fe_status = f"ERR:{type(e).__name__}"
+                last_spot_post_ts = now
 
             if other_changed or (now - last_other_post_ts >= post_interval_sec):
                 anlik = build_other_snapshot(other_symbol_map, other_mid, other_bid, other_ask)
@@ -1165,6 +1205,12 @@ def run_combined_bridge(run_seconds=RUN_SECONDS, post_interval_sec=2.0):
         spot_bid=spot_bid, spot_ask=spot_ask, fut_bid=fut_bid, fut_ask=fut_ask,
     )
     ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    # Kapanista bekleyen spotlar kaybolmasin.
+    if bekleyen_spot:
+        try:
+            post_spot_batch(bekleyen_spot, ts)
+        except Exception:
+            pass
     try:
         post_futures_rates_batch(rates_by_ticker, maturities, ts)
     except Exception:
