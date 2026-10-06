@@ -322,6 +322,15 @@ def _fiyat_karsilastir(option_type, spot, strike, rate, t, sigma, steps=200):
     }
 
 
+def _bs_dv01(option_type, spot, strike, rate, t, sigma):
+    """1 baz puanlik (0.01%) faiz degisimine karsi fiyat degisimi.
+
+    rho 1 puan (1%) basina tanimli oldugu icin DV01 onun yuzde biridir.
+    """
+    rho = _bs_rho(option_type, spot, strike, rate, t, sigma)
+    return None if rho is None else rho / 100.0
+
+
 def _implied_vol_bisect(option_type, market_price, spot, strike, rate, t, tol=1e-8, max_iter=120):
     if market_price is None or spot is None or strike is None or rate is None or t is None:
         return None
@@ -479,8 +488,8 @@ def _build_enriched_options(options_for_ticker, ticker, maturities, spot_mid, ra
         t = (option_dtm / 365.0) if option_dtm is not None and option_dtm > 0 else None
         call_bid_iv = call_ask_iv = put_bid_iv = put_ask_iv = None
         call_delta = put_delta = None
-        call_gamma = call_vega = call_theta = call_rho = None
-        put_gamma = put_vega = put_theta = put_rho = None
+        call_gamma = call_vega = call_theta = call_rho = call_dv01 = None
+        put_gamma = put_vega = put_theta = put_rho = put_dv01 = None
         if spot is not None and rate is not None and t is not None:
             if call_opt:
                 cbp = call_opt.get("bid_price")
@@ -493,6 +502,7 @@ def _build_enriched_options(options_for_ticker, ticker, maturities, spot_mid, ra
                 call_vega = _bs_vega(spot, strike, rate, t, civ) if civ else None
                 call_theta = _bs_theta("C", spot, strike, rate, t, civ) if civ else None
                 call_rho = _bs_rho("C", spot, strike, rate, t, civ) if civ else None
+                call_dv01 = _bs_dv01("C", spot, strike, rate, t, civ) if civ else None
             if put_opt:
                 pbp = put_opt.get("bid_price")
                 pap = put_opt.get("ask_price")
@@ -504,6 +514,7 @@ def _build_enriched_options(options_for_ticker, ticker, maturities, spot_mid, ra
                 put_vega = _bs_vega(spot, strike, rate, t, piv) if piv else None
                 put_theta = _bs_theta("P", spot, strike, rate, t, piv) if piv else None
                 put_rho = _bs_rho("P", spot, strike, rate, t, piv) if piv else None
+                put_dv01 = _bs_dv01("P", spot, strike, rate, t, piv) if piv else None
         enriched.append({
             "expiry": expiry, "strike": strike, "dtm": option_dtm, "rate": rate, "spot_mid": spot,
             "call_bid_size": call_opt.get("bid_size") if call_opt else None,
@@ -512,10 +523,10 @@ def _build_enriched_options(options_for_ticker, ticker, maturities, spot_mid, ra
             "call_ask_size": call_opt.get("ask_size") if call_opt else None,
             "call_bid_iv": call_bid_iv, "call_ask_iv": call_ask_iv, "call_delta": call_delta,
             "call_gamma": call_gamma, "call_vega": call_vega,
-            "call_theta": call_theta, "call_rho": call_rho,
+            "call_theta": call_theta, "call_rho": call_rho, "call_dv01": call_dv01,
             "put_delta": put_delta, "put_bid_iv": put_bid_iv, "put_ask_iv": put_ask_iv,
             "put_gamma": put_gamma, "put_vega": put_vega,
-            "put_theta": put_theta, "put_rho": put_rho,
+            "put_theta": put_theta, "put_rho": put_rho, "put_dv01": put_dv01,
             "put_bid_size": put_opt.get("bid_size") if put_opt else None,
             "put_bid_price": put_opt.get("bid_price") if put_opt else None,
             "put_ask_price": put_opt.get("ask_price") if put_opt else None,

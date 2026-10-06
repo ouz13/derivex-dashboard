@@ -62,11 +62,13 @@ const optionColumnDefs = [
   { key: 'call_vega', label: 'C Vega' },
   { key: 'call_theta', label: 'C Θ' },
   { key: 'call_rho', label: 'C Rho' },
+  { key: 'call_dv01', label: 'C DV01' },
   { key: 'expiry', label: 'Expiry' },
   { key: 'strike', label: 'Strike' },
   { key: 'dtm', label: 'DTM' },
   { key: 'rate', label: 'Rate' },
   { key: 'spot_mid', label: 'Spot' },
+  { key: 'put_dv01', label: 'P DV01' },
   { key: 'put_rho', label: 'P Rho' },
   { key: 'put_theta', label: 'P Θ' },
   { key: 'put_vega', label: 'P Vega' },
@@ -102,6 +104,7 @@ const serverState = {
   futuresMeta: [],
   optionsChainByTicker: {},
   dividendsByTicker: {},
+  yieldCurve: null,        // NSS uydurma sonucu (fit_curve.py gonderir)
   pricerLog: []
 };
 
@@ -2358,6 +2361,7 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
     function initDiscount() {
       var root = document.getElementById('toolsDiscountCard');
       if (!root) return;
+      nssGoster();
       var DISC_STORAGE_KEY = 'discountFactors';
       function loadFactors() {
         try { var r = localStorage.getItem(DISC_STORAGE_KEY); return r ? JSON.parse(r) : {}; } catch(_) { return {}; }
@@ -2385,6 +2389,55 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         input.addEventListener('input', persistAll);
         input.addEventListener('change', persistAll);
       });
+    }
+
+    // Uydurulmus NSS egrisini gosterir. Egri fit_curve.py tarafindan
+    // hesaplanip /api/yield-curve ucuna gonderilir; burada yalnizca okunur.
+    function nssGoster() {
+      var durum = document.getElementById('nssStatus');
+      var govde = document.getElementById('nssBody');
+      if (!durum) return;
+      fetch('/api/yield-curve').then(function (r) { return r.json(); }).then(function (d) {
+        var c = d && d.curve;
+        if (!c || !c.params) {
+          durum.textContent = 'no fitted curve yet — run: python3 fit_curve.py';
+          if (govde) govde.style.display = 'none';
+          return;
+        }
+        var p = c.params;
+        var adi = p.model === 'NSS' ? 'Nelson-Siegel-Svensson' : 'Nelson-Siegel';
+        var metin = adi + ' \u00b7 ' + p.nokta_sayisi + ' observed tenors \u00b7 fitted '
+                  + String(c.ts || '').slice(11, 19);
+        if (c.en_uzun_gozlem_gun) {
+          metin += ' \u00b7 valid to ~' + c.gecerli_azami_gun + 'd'
+                 + ' (longest observed ' + c.en_uzun_gozlem_gun + 'd)';
+        }
+        if (p.tam_belirlenmis) {
+          // Parametre sayisi gozlem sayisina esit: uyum zorunlu olarak tam
+          // cikar, RMSE kalite olcusu degildir. Bunu gizlemek yaniltici olur.
+          metin += ' \u00b7 exactly determined (RMSE is not a fit-quality measure)';
+          durum.style.color = '#b45309';
+        } else {
+          metin += ' \u00b7 RMSE ' + (p.rmse * 100).toFixed(3) + ' pts';
+          durum.style.color = '#64748b';
+        }
+        durum.textContent = metin;
+        document.getElementById('nssParams').textContent =
+          'b0=' + p.b0.toFixed(4) + '  b1=' + p.b1.toFixed(4)
+          + '  b2=' + p.b2.toFixed(4) + '  b3=' + p.b3.toFixed(4)
+          + '  lambda1=' + p.l1 + '  lambda2=' + p.l2;
+
+        var bas = '<th style="padding:4px 10px;text-align:left;">DTM</th>';
+        var sat = '<td style="padding:4px 10px;font-weight:600;">Rate</td>';
+        (c.curve || []).forEach(function (pt) {
+          bas += '<th style="padding:4px 10px;text-align:right;">' + pt.dtm + 'd</th>';
+          sat += '<td style="padding:4px 10px;text-align:right;">'
+               + (pt.rate * 100).toFixed(2) + '%</td>';
+        });
+        document.getElementById('nssHead').innerHTML = bas;
+        document.getElementById('nssRow').innerHTML = sat;
+        if (govde) govde.style.display = '';
+      }).catch(function () { durum.textContent = 'unreachable'; });
     }
 
     function initDividends() {
@@ -2583,6 +2636,7 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
       const cvg = gre(row?.call_vega, 4),  pvg = gre(row?.put_vega, 4);
       const cth = gre(row?.call_theta, 4), pth = gre(row?.put_theta, 4);
       const crh = gre(row?.call_rho, 4),   prh = gre(row?.put_rho, 4);
+      const cdv = gre(row?.call_dv01, 6),  pdv = gre(row?.put_dv01, 6);
       const pbi = row?.put_bid_iv !== null && row?.put_bid_iv !== undefined ? (row.put_bid_iv * 100).toFixed(2) + '%' : '-';
       const pai = row?.put_ask_iv !== null && row?.put_ask_iv !== undefined ? (row.put_ask_iv * 100).toFixed(2) + '%' : '-';
       const pbs = fmtSize(row?.put_bid_size);
@@ -2607,9 +2661,9 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
       const putAskIvAttr = Number.isFinite(putAskIvNum) && putAskIvNum > 0 ? String(putAskIvNum) : '';
       const rowAttrs = ' data-option-row="true" data-ticker="' + (ticker || '') + '" data-expiry="' + (row?.expiry || '') + '" data-strike="' + (row?.strike || '') + '" data-dtm="' + dtmAttr + '" data-rate="' + rateAttr + '" data-maturity="' + maturityAttr + '" data-call-iv="' + callIvAttr + '" data-put-iv="' + putIvAttr + '" data-call-bid-iv="' + callBidIvAttr + '" data-call-ask-iv="' + callAskIvAttr + '" data-put-bid-iv="' + putBidIvAttr + '" data-put-ask-iv="' + putAskIvAttr + '" style="cursor: pointer;"';
       return '<tr' + hiddenAttr + rowAttrs + '><td>' + cbs + '</td><td>' + cbp + '</td><td>' + cap + '</td><td>' + cas + '</td><td>' + cbi + '</td><td>' + cai + '</td><td>' + cdt + '</td>'
-        + '<td>' + cgm + '</td><td>' + cvg + '</td><td>' + cth + '</td><td>' + crh + '</td>'
+        + '<td>' + cgm + '</td><td>' + cvg + '</td><td>' + cth + '</td><td>' + crh + '</td><td>' + cdv + '</td>'
         + '<td><span class="exp-chip">' + exp + '</span></td><td>' + str + '</td><td>' + dtm + '</td><td>' + rate + '</td><td>' + spot + '</td>'
-        + '<td>' + prh + '</td><td>' + pth + '</td><td>' + pvg + '</td><td>' + pgm + '</td>'
+        + '<td>' + pdv + '</td><td>' + prh + '</td><td>' + pth + '</td><td>' + pvg + '</td><td>' + pgm + '</td>'
         + '<td>' + pdt + '</td><td>' + pbi + '</td><td>' + pai + '</td><td>' + pbs + '</td><td>' + pbp + '</td><td>' + pap + '</td><td>' + pas + '</td></tr>';
     }
 
@@ -3189,6 +3243,18 @@ function toolsContent(toolsTab) {
       + '<h2 class="section-title">Discount Factors</h2>'
       + '<p class="rv-top-note">Enter annualized discount rates (%) per month tenor. Used in the Options Pricer to compute PV of dividend via linear interpolation.</p>'
       + '</div></div>'
+      + '<div id="nssPanel" style="margin:0 0 14px 0;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;background:#f8fafc;">'
+      +   '<div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">'
+      +     'Fitted Yield Curve</div>'
+      +   '<div id="nssStatus" style="font-size:12px;color:#64748b;">loading…</div>'
+      +   '<div id="nssBody" style="display:none;margin-top:8px;">'
+      +     '<div id="nssParams" style="font-size:12px;color:#334155;margin-bottom:8px;font-family:monospace;"></div>'
+      +     '<div style="overflow-x:auto;"><table style="border-collapse:collapse;font-size:12px;">'
+      +       '<thead><tr id="nssHead" style="background:#0f1728;color:#fff;"></tr></thead>'
+      +       '<tbody><tr id="nssRow"></tr></tbody>'
+      +     '</table></div>'
+      +   '</div>'
+      + '</div>'
       + '<div class="table-wrap"><table class="rv-table"><thead><tr>'
       + '<th>Tenor</th><th>Rate (%)</th><th></th>'
       + '</tr></thead><tbody>' + discRows + '</tbody></table></div></div>';
@@ -4702,11 +4768,13 @@ const server = http.createServer(async (req, res) => {
             call_vega: toNum(row?.call_vega),
             call_theta: toNum(row?.call_theta),
             call_rho: toNum(row?.call_rho),
+            call_dv01: toNum(row?.call_dv01),
             put_delta: toNum(row?.put_delta),
             put_gamma: toNum(row?.put_gamma),
             put_vega: toNum(row?.put_vega),
             put_theta: toNum(row?.put_theta),
             put_rho: toNum(row?.put_rho),
+            put_dv01: toNum(row?.put_dv01),
             put_bid_iv: toNum(row?.put_bid_iv),
             put_ask_iv: toNum(row?.put_ask_iv),
             put_bid_size: toNum(row?.put_bid_size),
@@ -4804,6 +4872,29 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ ok: true, positions: pozisyonlar }));
+    return;
+  }
+
+  if (url.pathname === '/api/yield-curve' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: true, curve: serverState.yieldCurve }));
+    return;
+  }
+
+  if (url.pathname === '/api/yield-curve' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; if (body.length > 200_000) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const p = JSON.parse(body || '{}');
+        serverState.yieldCurve = { ...p, ts: new Date().toISOString() };
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, points: (p.curve || []).length }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
+      }
+    });
     return;
   }
 

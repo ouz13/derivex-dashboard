@@ -102,6 +102,34 @@ Bu kanca `.env` dosyalarını, **yeni** şifre/anahtarları ve aşırı büyük
 dosyaları commit öncesinde yakalar. Mevcut IdealData bilgileri bilinçli bir
 karar olduğu için muaf tutulmuştur.
 
+## Faiz eğrisi (Nelson-Siegel-Svensson)
+
+Vadeli işlem fiyatlarından türeyen oranlara pürüzsüz bir eğri uydurulur; ara
+vadeler doğrusal interpolasyon yerine modelin kendisinden okunur.
+
+```bash
+python3 fit_curve.py            # bir kez uydur
+python3 fit_curve.py --watch    # periyodik
+```
+
+Sonuç Discount Rate sekmesinde görünür. Uydurma yöntemi λ sabitlendiğinde
+model β'larda doğrusal olduğu için kapalı formda çözülür — genel amaçlı bir
+optimize edici ve dolayısıyla dış bağımlılık gerekmez.
+
+**Model gözlem sayısına göre küçülür.** VİOP'ta genelde yalnızca 3 aktif
+vadeli kontrat vade bulunur; altı parametreli NSS bunu kaldırmaz. 5+ gözlemde
+NSS, 3–4 gözlemde Nelson-Siegel (tek kambur) kullanılır. Panel hangisinin
+kullanıldığını yazar.
+
+İki şey bilinçli olarak ekranda belirtilir:
+
+- **Tam belirlenmişlik** — parametre sayısı gözlem sayısına eşitse uyum
+  zorunlu olarak tam çıkar ve RMSE ≈ 0 olur. Bu uyum kalitesi değildir;
+  panel bunu uyarı olarak gösterir.
+- **Geçerlilik aralığı** — eğri, en uzun gözlemin 1.5 katından öteye
+  örneklenmez. 2 aya yayılmış üç noktadan 2 yıllık oran üretmek, modelin
+  söyleyemeyeceği bir şeyi söyletmek olurdu.
+
 ## Fiyatlama yöntemleri
 
 | Yöntem | Kullanım |
