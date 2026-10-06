@@ -297,6 +297,48 @@ class TestFrameParsing(unittest.TestCase):
         self.assertEqual(len(frames), 2)
         self.assertEqual(kalan, b"YARIM;1=AK")
 
+    def test_parse_frames_ayirici_ile_biterse_artan_bos(self):
+        frames, kalan = B.parse_frames(b"A;1=X|B;1=Y|")
+        self.assertEqual(frames, ["A;1=X", "B;1=Y"])
+        self.assertEqual(kalan, b"")
+
+    def test_parse_frames_ayirici_yoksa_hepsi_artan(self):
+        frames, kalan = B.parse_frames(b"YARIM;1=AK")
+        self.assertEqual(frames, [])
+        self.assertEqual(kalan, b"YARIM;1=AK")
+
+    def test_parse_frames_bos_cerceveleri_atlar(self):
+        frames, _ = B.parse_frames(b"A;1=X||  |B;1=Y|")
+        self.assertEqual(frames, ["A;1=X", "B;1=Y"])
+
+    def test_parse_frames_dogrusal_olcekler(self):
+        """
+        Onceki surum her cerceve icin tamponun kalanini kopyaliyordu,
+        yani karesel idi. Normalde gorunmuyordu cunku tampon 4 KB'lik
+        parcalarla buyur; ama akis hizlanip dongu geri kaldiginda tampon
+        buyur ve maliyet TAM DA zaten geride kalmisken patlar.
+
+        Girdi 4 katina cikarken sure 4 kat civari artmali. Karesel bir
+        surumde ~16 kat olurdu; esik ikisinin arasinda ve olcum
+        gurultusune yer birakacak kadar genis.
+        """
+        import time
+
+        def sure(adet):
+            tampon = b"|".join(b"YU;1=THYAO;6=281.0;9=281.5" for _ in range(adet)) + b"|"
+            t0 = time.perf_counter()
+            B.parse_frames(tampon)
+            return time.perf_counter() - t0
+
+        kucuk = min(sure(5000) for _ in range(3))
+        buyuk = min(sure(20000) for _ in range(3))
+        # Cok kisa surelerde bolme gurultulu olur; taban sure uygula
+        if kucuk < 1e-4:
+            kucuk = 1e-4
+        self.assertLess(buyuk / kucuk, 8.0,
+                        f"parse_frames dogrusal olceklenmemis "
+                        f"(4x girdi -> {buyuk/kucuk:.1f}x sure)")
+
     def test_parse_frame_tip_ve_alanlar(self):
         tip, alanlar = B.parse_frame("YU;1=THYAO;6=281.00;9=281.50")
         self.assertEqual(tip, "YU")

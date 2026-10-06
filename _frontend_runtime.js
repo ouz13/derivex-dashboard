@@ -94,6 +94,12 @@ const optionColumnDefs = [
 const DATA_MODE = process.env.DATA_MODE !== undefined ? Number(process.env.DATA_MODE) : 0;
 const MOCK_MODE = DATA_MODE === 0;
 
+// Saglik esikleri (saniye). Isletme ortamina gore degisebilsin diye
+// ortam degiskeninden okunuyor.
+const { degerlendir: saglikDegerlendir } = require('./health.js');
+const HEALTH_FRESH_SEC = Number(process.env.HEALTH_FRESH_SEC) || 60;
+const HEALTH_STALE_SEC = Number(process.env.HEALTH_STALE_SEC) || 900;
+
 // Degistirilemez denetim izi: fiyatlama ve risk koşuları zincirlenmiş
 // kayıtlara yazılır, geçmişe müdahale doğrulamada yakalanır.
 const auditTrail = new AuditTrail(path.join(__dirname, 'audit-log.jsonl'));
@@ -121,7 +127,11 @@ const serverState = {
   // Hisse disi vadeliler: endeks, doviz, emtia. Ima edilen getiri
   // tasimazlar — bu dayanaklarin spot kotasyonu akista yok.
   otherAssets: {},
-  otherAssetsTs: null
+  otherAssetsTs: null,
+  // Kaynak basina son veri alim zamani (sunucunun gorme ani).
+  // Akisin kendi ts'i yalnizca saat:dakika:saniye tasidigi icin yas
+  // hesabina elverisli degil; saglik kontrolu bunu kullanir.
+  lastPostAt: { spot: null, futures: null, options: null, other: null }
 };
 
 const DIVIDENDS_FILE = path.join(__dirname, 'dividends.json');
@@ -369,6 +379,16 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         <div class="title">Derivex Dashboard</div>
         <button type="button" class="help-btn" id="helpBtn">Help</button>
         <button type="button" class="help-btn" id="transferDataBtn" onclick="openTransferDataModal()" style="margin-left:6px;">Transfer Data</button>
+        <!-- Saglik gostergesi her sayfada gorunur: bir sey bozuldugunda
+             kullanicinin once Summary sekmesine gitmesi gerekmesin. -->
+        <a href="/market/summary" id="saglikRozet" title="System health"
+           style="margin-left:10px;display:inline-flex;align-items:center;gap:6px;
+                  text-decoration:none;font-size:12px;color:#64748b;
+                  border:1px solid #e2e8f0;border-radius:999px;padding:4px 10px;">
+          <span id="saglikNokta" style="width:8px;height:8px;border-radius:50%;
+                background:#cbd5e1;display:inline-block;flex-shrink:0;"></span>
+          <span id="saglikMetin">checking…</span>
+        </a>
       </div>
     </div>
     <div class="crumb">${breadcrumb}</div>
@@ -2614,6 +2634,66 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
       }).catch(function () { durum.textContent = 'unreachable'; });
     }
 
+    // Servis sagligi. Rozet her sayfada, ayrintili tablo Summary'de.
+    // Ikisi ayni /health yanitini kullanir ki gosterilen durum ile
+    // izleme sisteminin gordugu durum ayrisamasin.
+    var SAGLIK_RENK = { healthy: '#16a34a', degraded: '#b45309', unhealthy: '#dc2626' };
+
+    function saglikGoster() {
+      var nokta = document.getElementById('saglikNokta');
+      var metin = document.getElementById('saglikMetin');
+      var ozet = document.getElementById('saglikOzet');
+      var satirlar = document.getElementById('saglikSatirlar');
+      if (!nokta && !ozet) return;
+
+      fetch('/health').then(function (r) { return r.json(); }).then(function (d) {
+        var renk = SAGLIK_RENK[d.status] || '#64748b';
+        if (nokta) nokta.style.background = renk;
+        if (metin) {
+          // Rozette en kotu kontrolun adi yazilir: "degraded" tek basina
+          // neyin bozuk oldugunu soylemiyor.
+          var kotu = (d.checks || []).filter(function (c) { return c.status !== 'healthy'; });
+          metin.textContent = d.status === 'healthy'
+            ? 'healthy'
+            : d.status + (kotu.length ? ' · ' + kotu[0].name : '');
+          metin.style.color = renk;
+        }
+
+        if (ozet) {
+          var sayim = {};
+          (d.checks || []).forEach(function (c) { sayim[c.status] = (sayim[c.status] || 0) + 1; });
+          ozet.textContent = d.status.toUpperCase() + ' — '
+            + (sayim.healthy || 0) + ' healthy, ' + (sayim.degraded || 0) + ' degraded, '
+            + (sayim.unhealthy || 0) + ' unhealthy · mode ' + d.mode;
+          ozet.style.color = renk;
+        }
+        if (satirlar) {
+          satirlar.innerHTML = (d.checks || []).map(function (c) {
+            var r = SAGLIK_RENK[c.status] || '#64748b';
+            return '<tr>'
+              + '<td><b>' + c.name + '</b></td>'
+              + '<td style="color:' + r + ';font-weight:700;">' + c.status + '</td>'
+              + '<td>' + c.detail + '</td>'
+              + '<td>' + (c.age_s === null ? '—' : c.age_s + 's') + '</td>'
+              + '</tr>';
+          }).join('');
+        }
+        var esik = document.getElementById('saglikEsik');
+        if (esik && d.thresholds) {
+          esik.textContent = 'Thresholds: fresh ≤ ' + d.thresholds.fresh_s
+            + 's, stale > ' + d.thresholds.stale_s + 's'
+            + ' (HEALTH_FRESH_SEC / HEALTH_STALE_SEC)';
+        }
+      }).catch(function () {
+        if (nokta) nokta.style.background = SAGLIK_RENK.unhealthy;
+        if (metin) { metin.textContent = 'unreachable'; metin.style.color = SAGLIK_RENK.unhealthy; }
+        if (ozet) { ozet.textContent = 'UNREACHABLE — server not responding'; ozet.style.color = SAGLIK_RENK.unhealthy; }
+      });
+    }
+
+    saglikGoster();
+    setInterval(saglikGoster, 15000);
+
     // Hisse disi vadeliler: endeks, doviz, emtia. Dayanak basina vade
     // yapisi gosteriliyor; ima edilen getiri YOK cunku bu dayanaklarin
     // spot kotasyonu akista bulunmuyor.
@@ -3981,7 +4061,19 @@ function renderRoute(url, state) {
       marketTab: 'summary',
       toolsTab: null,
       breadcrumb: 'Main: <b>MARKET</b> - Market: <b>SUMMARY</b>',
-      contentHtml: placeholderPage('Summary', 'Content will be added later.'),
+      contentHtml: '<div class="card" id="saglikKart">'
+        + '<div class="card-head"><div>'
+        + '<h2 class="section-title">System Health</h2>'
+        + '<p class="rv-top-note">Live dependency status. <b>degraded</b> means something is stale '
+        + 'but the system is working &mdash; no data outside trading hours is normal. '
+        + '<b>unhealthy</b> means something is actually blocking.</p>'
+        + '</div></div>'
+        + '<div id="saglikOzet" style="font-size:13px;font-weight:700;margin-bottom:10px;">loading…</div>'
+        + '<div class="table-wrap"><table class="rv-table"><thead><tr>'
+        + '<th>Check</th><th>Status</th><th>Detail</th><th>Age</th>'
+        + '</tr></thead><tbody id="saglikSatirlar"></tbody></table></div>'
+        + '<p id="saglikEsik" style="font-size:11px;color:#94a3b8;margin-top:10px;"></p>'
+        + '</div>',
     });
   }
 
@@ -5026,9 +5118,43 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Gercek bagimlilik durumu. Eskiden sabit {"ok":true} donuyordu;
+  // sunucu ayakta ama veri hic akmiyorken de "saglikli" diyordu.
+  //
+  // HTTP durumu 200 kaliyor (sunucu yanit veriyor = surec ayakta);
+  // karar `status` alanina birakiliyor. Seans disinda veri akmamasi
+  // normal bir "degraded" haldir ve konteyneri yeniden baslatmayi
+  // gerektirmez.
   if (url.pathname === '/health') {
+    const sonModel = Object.values(serverState.modelParams || {})
+      .map((v) => v && v.ts).filter(Boolean).sort();
+    const rapor = saglikDegerlendir({
+      lastPostAt: serverState.lastPostAt,
+      storeStats: serverState.storeStats,
+      sayimlar: {
+        spot: Object.keys(serverState.spotByTicker).length,
+        futures: Object.keys(serverState.futuresRatesByTicker).length,
+        options: Object.keys(serverState.optionsChainByTicker).length,
+        other: Object.keys(serverState.otherAssets).length,
+      },
+      modelTs: sonModel.length ? sonModel[sonModel.length - 1] : null,
+      egriTs: serverState.yieldCurve ? serverState.yieldCurve.ts : null,
+      mockMu: MOCK_MODE,
+      esikler: { taze: HEALTH_FRESH_SEC, bayat: HEALTH_STALE_SEC },
+    });
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ ok: true, page: 'market-shell' }));
+    res.end(JSON.stringify({ ok: rapor.status !== 'unhealthy', ...rapor }));
+    return;
+  }
+
+  if (url.pathname === '/health.js') {
+    try {
+      const data = fs.readFileSync(path.join(__dirname, 'health.js'));
+      res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+      res.end(data);
+    } catch (e) {
+      res.writeHead(404); res.end('health.js not found');
+    }
     return;
   }
 
@@ -5060,6 +5186,7 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         serverState.spotByTicker[ticker] = { spot_mid: spotMid, ts: payload.ts || new Date().toISOString() };
+        serverState.lastPostAt.spot = new Date().toISOString();
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: true, stored: serverState.spotByTicker[ticker] }));
       } catch {
@@ -5155,6 +5282,7 @@ const server = http.createServer(async (req, res) => {
 
         serverState.futuresRatesByTicker = normalized;
         serverState.futuresMeta = maturities;
+        serverState.lastPostAt.futures = new Date().toISOString();
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: true, tickers: Object.keys(normalized).length }));
@@ -5248,8 +5376,9 @@ const server = http.createServer(async (req, res) => {
         // Alinma zamani kaydediliyor: arayuz fiyatlarin yasini gosterebilsin.
         // Kaynagin kendi ts'i yalnizca saat:dakika:saniye tasidigi icin
         // sunucunun gorme ani kullaniliyor — tarih bilgisi orada yok.
+        serverState.lastPostAt.options = new Date().toISOString();
         serverState.optionsChainMeta[ticker] = {
-          received_at: new Date().toISOString(),
+          received_at: serverState.lastPostAt.options,
           source_ts: payload.ts || null,
           rows: normalized.length,
         };
@@ -5401,6 +5530,7 @@ const server = http.createServer(async (req, res) => {
         }
         serverState.otherAssets = temiz;
         serverState.otherAssetsTs = new Date().toISOString();
+        serverState.lastPostAt.other = serverState.otherAssetsTs;
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: true, underlyings: Object.keys(temiz).length }));
       } catch {

@@ -693,14 +693,28 @@ def read_initial_response(sock: socket.socket, seconds: float = 2.0) -> str:
 
 
 def parse_frames(buffer: bytes):
+    """
+    Bayt tamponunu '|' ile ayrilmis cercevelere boler.
+    Son parca (henuz '|' gormemis) tampon olarak geri doner.
+
+    Onceki surum her cerceve icin tamponun KALANINI yeniden kopyaliyordu
+    (buffer = buffer[idx+1:]) ve her turda tamponu iki kez tariyordu —
+    yani cerceve sayisina gore karesel. Normalde tampon 4 KB'lik
+    parcalarla buyudugu icin gorunmuyordu, ama akis hizlanip dongu geri
+    kaldiginda tampon buyur ve maliyet TAM DA zaten geride kalmisken
+    patlar. Yuk olcumunde yakalandi: 5 MB'lik tamponda 8.9k cerceve/sn,
+    diger asamalardan yuz kat yavas. split() ile tek gecis, O(n).
+    """
+    if b"|" not in buffer:
+        return [], buffer
+    parcalar = buffer.split(b"|")
+    kalan = parcalar.pop()            # son parca tamamlanmamis cerceve
     frames = []
-    while b"|" in buffer:
-        idx = buffer.index(b"|")
-        raw = buffer[:idx].decode("utf-8", errors="replace").strip()
-        buffer = buffer[idx + 1:]
+    for p in parcalar:
+        raw = p.decode("utf-8", errors="replace").strip()
         if raw:
             frames.append(raw)
-    return frames, buffer
+    return frames, kalan
 
 
 def parse_frame(raw: str):

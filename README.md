@@ -72,6 +72,8 @@ IdealData REST ─────────────────────�
 | `idealdata_probe.py` | Bağlantı/yetki teşhis aracı |
 | `store.py` | SQLite kalıcılık katmanı — zaman serisi, model sürümleme |
 | `model_fallback.js` | Kalibrasyon başarısızlığında fallback zinciri |
+| `health.js` | Servis sağlığı değerlendirmesi (`/health`) |
+| `bench_stream.py` | Veri boru hattı kapasite ölçümü |
 | `garch.py` | Depodaki geçmişten gerçekleşmiş volatilite ve GARCH(1,1) |
 | `yield_curve.py` / `fit_curve.py` | Nelson-Siegel-Svensson eğri uydurma |
 
@@ -428,3 +430,76 @@ uyduruyordu; artık alternatif model yalnızca birincisi reddedilince
 uyduruluyor, bu da SVI seçiliyken kalibrasyonu ~400 kat hızlandırdı.
 
 Heston'ın kendisi hâlâ yavaş — bu ayrı bir iş olarak duruyor.
+
+## Servis sağlığı
+
+`/health` eskiden sabit `{"ok":true}` dönüyordu — hiçbir bağımlılığı kontrol
+etmiyordu, yani sunucu ayakta ama **veri hiç akmıyorken de "sağlıklı"** diyordu.
+İzleme açısından bu, anlaması gereken tek durumu kaçırmak demekti.
+
+Artık yedi kontrol dönüyor: dört veri kaynağı (spot, vadeli, opsiyon, diğer
+varlıklar), depo, volatilite kalibrasyonu, faiz eğrisi. Başlıkta her sayfada
+görünen bir rozet, ayrıntılı tablo `Market → Summary` sekmesinde.
+
+**Üç durum, iki eşik:**
+
+| Durum | Anlamı |
+|---|---|
+| `healthy` | Tüm kontroller taze |
+| `degraded` | Bir şey bayat ama sistem çalışıyor |
+| `unhealthy` | Çalışmayı engelleyen bir şey var |
+
+Ayrım önemli: **seans dışında veri akmaması normaldir** ve konteyneri yeniden
+başlatmayı gerektirmez. Bu yüzden HTTP durumu 200 kalır, karar `status` alanına
+bırakılır. "Hiç veri gelmedi" ile "bayatladı" da ayrı tutulur — biri kurulumun
+çalışmadığını, öteki akışın durduğunu gösterir.
+
+Kaynaklar **kendi temposuna göre** yargılanır: veri akışı saniyede bir yazar
+(60 sn eşiği), depo raporu 60 sn'de bir gönderilir, eğri 300 sn'de bir
+uydurulur (900 sn eşiği). Periyodik işleri akış eşiğiyle ölçmek, 5 dakikada bir
+çalışan bir işi her seferinde bayat göstermek olurdu.
+
+Eşikler `HEALTH_FRESH_SEC` / `HEALTH_STALE_SEC` ile değiştirilir. Docker'ın
+`HEALTHCHECK`'i artık `/` yerine `/health`'e bakıyor ve yalnızca `unhealthy`
+durumunu başarısızlık sayıyor.
+
+## Kapasite ölçümü
+
+Dökümandaki *"saniyede 10.000+ mesaj"* senaryosu hiç test edilmemişti.
+`bench_stream.py` gerçek kayıttan (59.078 çerçeve) ölçer:
+
+```bash
+python3 bench_stream.py           # yalnızca ayrıştırma (yan etkisiz)
+python3 bench_stream.py --post    # POST yolunu da ölç (çalışan dashboard gerekir)
+```
+
+POST ölçümü opt-in: gerçek POST yolunu ölçmek için gerçekten POST atması
+gerekiyor, bu yüzden `ZZ_BENCH` adlı sahte bir ticker gönderip sonra depodan
+temizliyor. Tanılama aracının canlı duruma kalıcı iz bırakmaması için varsayılan
+kapalı.
+
+Aşamalar ayrı ayrı ölçülür, çünkü toplam sayı tek başına nerede tıkandığını
+söylemez. Ölçüm sonucu:
+
+| Aşama | Verim |
+|---|---|
+| `parse_frames` | 6.7M/sn |
+| `parse_frame` | 750k/sn |
+| `extract_quote` | 4.2M/sn |
+| `apply_quote` | 2.5M/sn |
+| **Uçtan uca ayrıştırma** | **829k/sn** |
+| **Dashboard'a POST** | **2.4k/sn** |
+
+**İki bulgu:**
+
+1. **`parse_frames` kareseldi.** Her çerçeve için tamponun kalanını kopyalıyor
+   ve her turda tamponu iki kez tarıyordu. Normalde görünmüyordu çünkü tampon
+   4 KB'lık parçalarla büyür — ama akış hızlanıp döngü geri kaldığında tampon
+   büyür ve maliyet *tam da zaten geride kalmışken* patlar. `split()` ile tek
+   geçişe çevrildi: **8.9k/sn → 6.7M/sn.** Doğrusal ölçeklendiği testle
+   sabitlendi.
+
+2. **Darboğaz POST yolu.** Ayrıştırma hedefi 83 kat aşıyor ama köprü her spot
+   değişiminde ayrı bir POST attığı için pratik tavan **~2.400 msg/sn**.
+   Dökümandaki 10.000 hedefi bu haliyle **karşılanmıyor**. Çözüm yönü spot
+   başına tek POST yerine toplu gönderim — ayrı bir madde.

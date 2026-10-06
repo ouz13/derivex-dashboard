@@ -41,7 +41,13 @@ ENV HOST=0.0.0.0 \
 
 EXPOSE 5173
 
+# /health kontrol ediliyor, / degil: ikincisi tum sayfayi render ediyor
+# ve yalnizca surecin ayakta oldugunu soyluyordu.
+#
+# "degraded" BASARISIZ SAYILMAZ. Seans disinda veri akmamasi normaldir
+# ve konteyneri yeniden baslatmayi gerektirmez; yalnizca gercekten
+# engelleyici bir durum (unhealthy) basarisizlik sayilir.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||5173)+'/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+    CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||5173)+'/health').then(r=>r.json()).then(d=>process.exit(d.status==='unhealthy'?1:0)).catch(()=>process.exit(1))"
 
 CMD ["python3", "start.py"]
