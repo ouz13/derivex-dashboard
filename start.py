@@ -260,6 +260,32 @@ def _model_senkron(port):
         pass
 
 
+def _egri_yenile(port):
+    """
+    NSS faiz egrisini yeniden uydurur.
+
+    Bu adim eksikti: fit_curve.py yazilmisti ama hicbir yerden
+    cagrilmiyordu, dolayisiyla temiz bir kurulumda Discount Rate sekmesi
+    "no fitted curve yet — run: python3 fit_curve.py" diyordu. Dokuman
+    egrinin GUNLUK guncellenmesini istiyor; kullaniciya elle komut
+    calistirtmak bunu karsilamiyor.
+
+    Vadeli oranlar akmadan uydurma yapilamaz, bu yuzden kopru ayaga
+    kalktiktan sonra calisir ve periyodik tekrarlanir.
+    """
+    if not os.path.isfile(os.path.join(KOK, "fit_curve.py")):
+        return
+    try:
+        log = open(os.path.join(KOK, "store.log"), "a")
+        subprocess.Popen([sys.executable, "-u", "fit_curve.py"], cwd=KOK,
+                         stdout=log, stderr=subprocess.STDOUT,
+                         env=dict(os.environ,
+                                  FRONTEND_BASE_URL=f"http://127.0.0.1:{port}",
+                                  DATA_MODE=str(DATA_MODE)))
+    except Exception:
+        pass
+
+
 def _garch_yenile(port):
     """
     Depodaki gunluk kapanislardan GARCH/RV tahminini yeniden hesaplar.
@@ -342,11 +368,16 @@ def izle(port):
     log_yolu = os.path.join(KOK, "bridge.log")
     son = ""
     kopru_uyarildi = False
-    # Depo bakimi: panel ozeti sik, GARCH yeniden uydurma seyrek.
+    # Depo bakimi: panel ozeti sik, egri orta, GARCH seyrek.
     STATS_ARALIK = 60.0
+    EGRI_ARALIK = float(os.environ.get("CURVE_REFRESH_SEC", "300"))
     GARCH_ARALIK = float(os.environ.get("GARCH_REFRESH_SEC", "900"))
     son_stats = time.time()
     son_garch = time.time()
+    # Egri ilk kez ~20 sn sonra uydurulur: koprunun vadeli oranlari
+    # gondermesi icin biraz zaman gerekiyor, ama kullanicinin 5 dakika
+    # bos panele bakmasi da gereksiz.
+    son_egri = time.time() - EGRI_ARALIK + 20
     while True:
         time.sleep(5)
         simdi = time.time()
@@ -354,6 +385,9 @@ def izle(port):
             son_stats = simdi
             _model_senkron(port)      # kalibrasyonlari surum gecmisine al
             _stats_gonder(port)       # sonra ozeti gonder ki yeni surum gorunsun
+        if simdi - son_egri >= EGRI_ARALIK:
+            son_egri = simdi
+            _egri_yenile(port)
         if simdi - son_garch >= GARCH_ARALIK:
             son_garch = simdi
             _garch_yenile(port)

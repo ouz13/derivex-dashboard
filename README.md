@@ -363,3 +363,36 @@ dolar.
 
 **Tek stream oturumu hakkı vardır.** Aynı kullanıcıyla ikinci bir bağlantı
 denenirse login reddedilir.
+
+## Diğer varlıklar (endeks, FX, emtia)
+
+Endeks, döviz ve emtia vadelileri hisselerle aynı akıştan geliyordu ama
+`TARGET_TICKERS` yalnızca hisse içerdiği için filtrelenip atılıyordu — örnek
+kayıtta 4.216 mesaj. Artık `Market → Other Assets` sekmesinde görünüyorlar:
+XU030, X10XB, USDTRY, CNHTRY, XAUUSD, XAGUSD, XAUTRYM, XPTUSD, XPDUSD.
+
+İki şey bilinçli olarak farklı yapıldı:
+
+- **İma edilen getiri gösterilmiyor.** Getiri vadeli/spot oranından türüyor ve
+  bu dayanakların **spot kotasyonu akışta yok** (kayıtta 9 dayanaktan 7'sinde
+  hiç, kalan ikisinde çok seyrek). Spot olmadan getiri üretmek uydurma bir sayı
+  olurdu; ekranda bunun neden boş olduğu yazıyor.
+- **Vade döngüsü farklı.** Hissede ardışık aylar (0926, 1026, 1126), altında
+  çift aylar (1026, 1226, 0227), CNHTRY çift ay, USDTRY aylık. Tek bir döngü
+  varsaymak ya yanlış sembol üretir ya var olanı kaçırır. Köprü "hepsini al,
+  filtrele" modeliyle çalıştığı için eşleşmeyen aday sembolün maliyeti yok —
+  bu yüzden döngü tahmin etmek yerine **önümüzdeki 6 ayın hepsi aday
+  üretiliyor.** Örnek kayıt üzerinde doğrulandı: 21 sembolün tamamı, %100.
+
+## Hesaplama süreleri
+
+Kalibrasyon, VaR koşusu ve opsiyon zinciri zenginleştirme ölçülüyor; süreler
+durum satırında ve denetim izinde duruyor.
+
+Ölçüm hemen bir şey gösterdi: **Heston kalibrasyonu ~2.8 saniye, SVI ~7
+milisaniye.** Maliyetin tamamı Heston'ın karakteristik fonksiyon integralini
+ızgara üzerinde taramasından geliyor. Fallback zinciri önce her iki modeli de
+uyduruyordu; artık alternatif model yalnızca birincisi reddedilince
+uyduruluyor, bu da SVI seçiliyken kalibrasyonu ~400 kat hızlandırdı.
+
+Heston'ın kendisi hâlâ yavaş — bu ayrı bir iş olarak duruyor.

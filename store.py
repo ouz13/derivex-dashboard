@@ -640,7 +640,8 @@ def _sync_models(taban_url=None):
             d.model_surum_yaz(model, params, scope=kapsam,
                               fit_quality=_sayi(kayit.get("rmse")),
                               meta={"points": kayit.get("points"),
-                                    "calibrated_at": kayit.get("ts")})
+                                    "calibrated_at": kayit.get("ts"),
+                                    "elapsed_ms": kayit.get("ms")})
             eklenen += 1
         print(f"[STORE] model senkronu: {eklenen} yeni surum / {len(tumu)} kalibrasyon")
         return eklenen

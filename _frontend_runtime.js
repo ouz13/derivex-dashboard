@@ -117,7 +117,11 @@ const serverState = {
   modelParams: {},
   // Opsiyon zincirinin ticker basina alinma zamani. Fiyatlarin yasini
   // gostermek icin: bayat veriyle uretilmis bir egri taze gorunmemeli.
-  optionsChainMeta: {}
+  optionsChainMeta: {},
+  // Hisse disi vadeliler: endeks, doviz, emtia. Ima edilen getiri
+  // tasimazlar — bu dayanaklarin spot kotasyonu akista yok.
+  otherAssets: {},
+  otherAssetsTs: null
 };
 
 const DIVIDENDS_FILE = path.join(__dirname, 'dividends.json');
@@ -371,7 +375,7 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
     <div class="row">
       ${navPill('Market', '/market/futures', mainTab === 'market')}
       ${navPill('Tools', '/tools', mainTab === 'tools')}
-      ${mainTab === 'market' ? `<div class="group">${navPill('Options', '/market/options', marketTab === 'options')}${navPill('Warrants', '/market/warrants', marketTab === 'warrants')}${navPill('Futures', '/market/futures', marketTab === 'futures')}${navPill('Summary', '/market/summary', marketTab === 'summary')}</div>` : ''}
+      ${mainTab === 'market' ? `<div class="group">${navPill('Options', '/market/options', marketTab === 'options')}${navPill('Warrants', '/market/warrants', marketTab === 'warrants')}${navPill('Futures', '/market/futures', marketTab === 'futures')}${navPill('Other Assets', '/market/other', marketTab === 'other')}${navPill('Summary', '/market/summary', marketTab === 'summary')}</div>` : ''}
       ${mainTab === 'tools' ? `<div class="tool-tabs">${navPill('Dividends', '/tools/dividends', toolsTab === 'dividends')}${navPill('Discount Rate', '/tools/discount', toolsTab === 'discount')}${navPill('Pricer', '/tools/pricer', toolsTab === 'pricer')}${navPill('Realized Vols', '/tools/realized-vols', toolsTab === 'realized-vols')}${navPill('Volatility Curve', '/tools/volatility-curve', toolsTab === 'volatility-curve')}${navPill('Risk', '/tools/risk', toolsTab === 'risk')}</div>` : ''}
     </div>
     ${contentHtml}
@@ -2208,16 +2212,36 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
           };
           const kapsam = TARGET_TICKER + ':' + vade;
 
-          // Her iki model de uyduruluyor. Maliyeti var ama fallback
-          // zincirinin "alternatif model" basamagi ancak digerinin sonucu
-          // elde olursa calisabilir; istenen model yakinsamadiginda
-          // kullaniciyi bekletip ikinci bir tur baslatmak daha kotu.
-          let hestonFit = null;
-          let sviFit = null;
-          if (calibPoints.length >= 2) {
-            try { hestonFit = fitHeston(calibPoints); } catch (_) { hestonFit = null; }
-            try { sviFit = fitSvi(calibPoints); } catch (_) { sviFit = null; }
+          // Kalibrasyon suresi olculuyor. Heston 11 tohum x 55 iterasyon
+          // izgara taramasi; ne kadar surdugu olculene kadar bilinmiyordu.
+          const kalibT0 = (window.performance && performance.now) ? performance.now() : Date.now();
+
+          // ONCE istenen model, SONRA gerekiyorsa alternatif.
+          //
+          // Ilk surumde ikisi birden uyduruluyordu; olcum bunun 2.7 saniye
+          // surdugunu gosterdi (model basina ~1.3 sn). Alternatif model
+          // yalnizca birincisi REDDEDILDIGINDE gerekli oldugu icin normal
+          // yolda bu surenin yarisi bosa gidiyordu. Simdi alternatif
+          // tembel uyduruluyor: olagan durumda yarisi kadar, fallback
+          // durumunda eskisi kadar surer — ki o da nadir olan hal.
+          const istenenModel = selectedModel === 'svi' ? 'svi' : 'heston';
+          const digerModel = istenenModel === 'svi' ? 'heston' : 'svi';
+          const uydur = (ad) => {
+            if (calibPoints.length < 2) return null;
+            try { return ad === 'svi' ? fitSvi(calibPoints) : fitHeston(calibPoints); }
+            catch (_) { return null; }
+          };
+
+          const uyumlar = {};
+          uyumlar[istenenModel] = uydur(istenenModel);
+          if (!window._modelKabulEdilir(uyumlar[istenenModel]).ok) {
+            uyumlar[digerModel] = uydur(digerModel);
           }
+          const hestonFit = uyumlar.heston || null;
+          const sviFit = uyumlar.svi || null;
+
+          const kalibMs = Math.round(
+            ((window.performance && performance.now) ? performance.now() : Date.now()) - kalibT0);
 
           // Son iyi parametreler — zincirin ucuncu basamagi. Ulasilamazsa
           // zincir bir basamak kisalir, akis durmaz.
@@ -2228,7 +2252,7 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
           } catch (_) { /* depo yoksa zincir varsayilana kadar iner */ }
 
           const secim = window._modelFallback({
-            istenen: selectedModel === 'svi' ? 'svi' : 'heston',
+            istenen: istenenModel,
             uyumlar: { heston: hestonFit, svi: sviFit },
             sonIyi: sonIyi,
             varsayilan: TOHUM,
@@ -2249,7 +2273,7 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
               body: JSON.stringify({
                 model: kullanilanModel, scope: kapsam,
                 params: secim.params, rmse: secim.rmse,
-                points: calibPoints.length,
+                points: calibPoints.length, ms: kalibMs,
               }),
             }).catch(function () { /* saklama basarisizligi egriyi bozmamali */ });
           }
@@ -2328,6 +2352,7 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
             var bas;
             if (secim.kaynak === 'kalibre') {
               bas = 'Calibrated ' + kullanilanEtiket + ' to ' + calibPoints.length + ' IV points'
+                  + ' in ' + kalibMs + ' ms'
                   + ' | IV RMSE: ' + (secim.rmse * 100).toFixed(2) + '%';
             } else if (secim.kaynak === 'alternatif') {
               bas = 'FALLBACK · ' + modelLabel + ' did not converge, using '
@@ -2551,6 +2576,79 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         document.getElementById('nssRow').innerHTML = sat;
         if (govde) govde.style.display = '';
       }).catch(function () { durum.textContent = 'unreachable'; });
+    }
+
+    // Hisse disi vadeliler: endeks, doviz, emtia. Dayanak basina vade
+    // yapisi gosteriliyor; ima edilen getiri YOK cunku bu dayanaklarin
+    // spot kotasyonu akista bulunmuyor.
+    function digerVarliklarGoster() {
+      var durum = document.getElementById('otherAssetsStatus');
+      var govde = document.getElementById('otherAssetsBody');
+      if (!durum || !govde) return;
+      fetch('/api/other-assets').then(function (r) { return r.json(); }).then(function (d) {
+        var a = (d && d.assets) || {};
+        var adlar = Object.keys(a).sort();
+        if (!adlar.length) {
+          durum.textContent = 'no index/FX/commodity futures received yet — keep the data source running';
+          govde.innerHTML = '';
+          return;
+        }
+
+        var sinifAdi = { index: 'Index', fx: 'FX', commodity: 'Commodity', other: 'Other' };
+        var yas = window._modelVeriYasi ? window._modelVeriYasi(d.ts) : null;
+        durum.textContent = adlar.length + ' underlying(s)'
+          + (yas && yas.saniye !== null ? ' · ' + yas.metin : '');
+        durum.style.color = (yas && (yas.durum === 'bayat' || yas.durum === 'cok-bayat'))
+          ? '#b45309' : '#64748b';
+
+        // Siniflara gore gruplanip her dayanak icin vade yapisi tablolaniyor.
+        var sinifSira = ['index', 'fx', 'commodity', 'other'];
+        var html = '';
+        sinifSira.forEach(function (sinif) {
+          var grup = adlar.filter(function (n) { return a[n].asset_class === sinif; });
+          if (!grup.length) return;
+          html += '<div style="margin-bottom:18px;">'
+                + '<div style="font-size:11px;font-weight:700;color:#64748b;'
+                + 'text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">'
+                + (sinifAdi[sinif] || sinif) + '</div>'
+                + '<div class="table-wrap"><table class="rv-table"><thead><tr>'
+                + '<th>Underlying</th><th>Maturity</th><th>DTM</th>'
+                + '<th>Bid</th><th>Ask</th><th>Mid</th></tr></thead><tbody>';
+          grup.forEach(function (ad) {
+            var v = a[ad].maturities || [];
+            if (!v.length) {
+              html += '<tr><td><b>' + ad + '</b></td>'
+                    + '<td colspan="5" style="color:#94a3b8;">no quotes</td></tr>';
+              return;
+            }
+            v.forEach(function (m, i) {
+              html += '<tr>'
+                + '<td>' + (i === 0 ? '<b>' + ad + '</b>' : '') + '</td>'
+                + '<td>' + (m.label || m.code) + '</td>'
+                + '<td>' + (m.dtm === null ? '-' : m.dtm) + '</td>'
+                + '<td>' + _dvSayi(m.bid) + '</td>'
+                + '<td>' + _dvSayi(m.ask) + '</td>'
+                + '<td><b>' + _dvSayi(m.mid) + '</b></td>'
+                + '</tr>';
+            });
+          });
+          html += '</tbody></table></div></div>';
+        });
+        govde.innerHTML = html;
+      }).catch(function () { durum.textContent = 'unreachable'; });
+    }
+
+    function _dvSayi(x) {
+      if (x === null || x === undefined || !isFinite(Number(x))) return '-';
+      var n = Number(x);
+      // Emtia ons fiyatlari ve kur paritelerinin olcegi cok farkli:
+      // altin ~4000, USDTRY ~41. Sabit basamak ikisine de uymuyor.
+      return n >= 100 ? n.toFixed(2) : n.toFixed(4);
+    }
+
+    if (document.getElementById('otherAssetsCard')) {
+      digerVarliklarGoster();
+      setInterval(digerVarliklarGoster, 5000);
     }
 
     // SQLite deposunun durumu ve model parametre surumleri.
@@ -3821,6 +3919,26 @@ function renderRoute(url, state) {
     });
   }
 
+  if (pathname === '/market/other') {
+    return appLayout({
+      mainTab: 'market',
+      marketTab: 'other',
+      toolsTab: null,
+      breadcrumb: 'Main: <b>MARKET</b> - Market: <b>OTHER ASSETS</b>',
+      contentHtml: '<div class="card" id="otherAssetsCard">'
+        + '<div class="card-head"><div>'
+        + '<h2 class="section-title">Other Assets &mdash; Index, FX, Commodity Futures</h2>'
+        + '<p class="rv-top-note">Index, currency and commodity futures carried on the same feed as '
+        + 'equities. <b>Implied yield is not shown for these:</b> it is derived from futures versus '
+        + 'spot, and the feed carries no spot quote for most of these underlyings. Showing a yield '
+        + 'without a spot would mean inventing one.</p>'
+        + '</div></div>'
+        + '<div id="otherAssetsStatus" style="font-size:12px;color:#64748b;margin-bottom:10px;">loading…</div>'
+        + '<div id="otherAssetsBody"></div>'
+        + '</div>',
+    });
+  }
+
   if (pathname === '/market/summary') {
     return appLayout({
       mainTab: 'market',
@@ -4801,14 +4919,20 @@ const server = http.createServer(async (req, res) => {
       '    setTimeout(function() {',
       '      try {',
       '        var dt=hold/365;',
+      '        // Hesaplama suresi olculuyor: 100 bin yollu bir kosunun ne',
+      '        // kadar surdugu simdiye kadar bilinmiyordu. Sure denetim',
+      '        // izine de yaziliyor ki gecmis kosular karsilastirilabilsin.',
+      '        var t0=(window.performance&&performance.now)?performance.now():Date.now();',
       '        var sim=window._riskSimulate(portfolio,{',
       '          nSims:nSims, dt:dt, mult:mult, rho:rho,',
       '          rateMap:rateMap, volMap:volMap',
       '        });',
+      '        var simMs=Math.round(((window.performance&&performance.now)?performance.now():Date.now())-t0);',
       '        var pnls=sim.pnls, stMap=sim.stMap, curVal=sim.curVal;',
       '        window._denetimYaz("var_kosusu", {',
       '          pozisyon: portfolio.length, nSims: nSims, conf: conf,',
-      '          hold: hold, rho: rho, volWin: volWin, portfoyDegeri: curVal',
+      '          hold: hold, rho: rho, volWin: volWin, portfoyDegeri: curVal,',
+      '          sureMs: simMs',
       '        });',
       '        pnls.sort(function(a,b){return a-b;});',
       '        var varIdx=Math.floor((1-conf)*nSims);',
@@ -4840,7 +4964,7 @@ const server = http.createServer(async (req, res) => {
       '            \'Paths with a loss: <b style="color:#ef4444;">\'+lossPct+\'%</b> of \'+nSims.toLocaleString()+\' simulations.\'+',
       '            \'</div>\';',
       '        }',
-      '        if(statusEl) statusEl.textContent="Done. "+nSims.toLocaleString()+" paths | Conf: "+(conf*100).toFixed(0)+"% | Hold: "+hold+"d | Vol window: "+volWin;',
+      '        if(statusEl) statusEl.textContent="Done in "+simMs+" ms. "+nSims.toLocaleString()+" paths | Conf: "+(conf*100).toFixed(0)+"% | Hold: "+hold+"d | Vol window: "+volWin;',
       '        var debugEl=document.getElementById("riskMcDebugTable");',
       '        if(debugEl){',
       '          var tks=Object.keys(stMap);',
@@ -5201,6 +5325,56 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Hisse disi vadeliler (endeks / doviz / emtia).
+  if (url.pathname === '/api/other-assets' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      ok: true, assets: serverState.otherAssets, ts: serverState.otherAssetsTs,
+    }));
+    return;
+  }
+
+  if (url.pathname === '/api/other-assets' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; if (body.length > 1_000_000) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const p = JSON.parse(body || '{}');
+        const gelen = p.assets;
+        if (!gelen || typeof gelen !== 'object' || Array.isArray(gelen)) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: 'assets object is required' }));
+          return;
+        }
+        const toNum = (v) => (v === null || v === undefined || !Number.isFinite(Number(v)) ? null : Number(v));
+        const temiz = {};
+        for (const [dayanak, kayit] of Object.entries(gelen)) {
+          if (!kayit || !Array.isArray(kayit.maturities)) continue;
+          temiz[String(dayanak).toUpperCase()] = {
+            underlying: String(kayit.underlying || dayanak).toUpperCase(),
+            asset_class: String(kayit.asset_class || 'other'),
+            maturities: kayit.maturities.map((m) => ({
+              code: String(m && m.code || ''),
+              label: String(m && m.label || ''),
+              dtm: toNum(m && m.dtm),
+              bid: toNum(m && m.bid),
+              ask: toNum(m && m.ask),
+              mid: toNum(m && m.mid),
+            })).filter((m) => m.code),
+          };
+        }
+        serverState.otherAssets = temiz;
+        serverState.otherAssetsTs = new Date().toISOString();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, underlyings: Object.keys(temiz).length }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
+      }
+    });
+    return;
+  }
+
   // Son basarili kalibrasyonlar. Fallback zincirinin "onceki parametre
   // setine donus" basamagi bunu okur.
   if (url.pathname === '/api/model-params' && req.method === 'GET') {
@@ -5246,6 +5420,9 @@ const server = http.createServer(async (req, res) => {
         serverState.modelParams[`${model}|${kapsam}`] = {
           params: p.params, rmse, ts: new Date().toISOString(),
           points: Number(p.points) || null,
+          // Kalibrasyon suresi: surum gecmisinde de dursun ki hesaplama
+          // maliyetinin zaman icinde nasil degistigi izlenebilsin.
+          ms: Number(p.ms) || null,
         };
         modelParamsYaz();
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });

@@ -53,6 +53,7 @@ FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "http://127.0.0.1:5173")
 FRONTEND_SPOT_ENDPOINT = f"{FRONTEND_BASE_URL}/api/spot"
 FRONTEND_FUTURES_RATES_ENDPOINT = f"{FRONTEND_BASE_URL}/api/futures-rates"
 FRONTEND_OPTIONS_CHAIN_ENDPOINT = f"{FRONTEND_BASE_URL}/api/options-chain"
+FRONTEND_OTHER_ASSETS_ENDPOINT = f"{FRONTEND_BASE_URL}/api/other-assets"
 
 TARGET_TICKERS = [
     "AEFES", "AKBNK", "AKSEN", "ALARK", "ARCLK", "ASELS", "ASTOR", "BIMAS", "BRSAN", "CIMSA",
@@ -61,6 +62,41 @@ TARGET_TICKERS = [
     "PETKM", "PGSUS", "SAHOL", "SASA", "SISE", "SOKM", "TAVHL", "TCELL", "THYAO", "TKFEN",
     "TOASO", "TSKB", "TTKOM", "TUPRS", "ULKER", "VAKBN", "VESTL", "YKBNK",
 ]
+
+# Hisse disi dayanaklar: endeks, doviz, emtia.
+#
+# Bunlar akista ZATEN geliyordu ama TARGET_TICKERS yalnizca hisse
+# icerdigi icin filtrelenip atiliyordu (ornek kayitta 4.216 mesaj).
+#
+# IKI ONEMLI FARK VAR:
+#
+# 1) SPOT YOK. Kayitta XAUUSD, XAGUSD, XAUTRYM, XPTUSD, XPDUSD, USDTRY ve
+#    CNHTRY icin spot kotasyonu HIC gelmiyor; yalnizca XU030 ve X10XB'de
+#    (o da cok seyrek) var. Vadeli ima edilen getiri (fut/spot - 1)
+#    spot'a dayandigi icin bu dayanaklarda HESAPLANAMAZ. Bos birakmak
+#    dogrusu; spot yerine en yakin vadeliyi koyup "getiri" uretmek
+#    uydurma bir sayi olurdu.
+#
+# 2) VADE DONGUSU FARKLI. Hisselerde ardisik aylar (0926, 1026, 1126),
+#    altinda cift aylar (1026, 1226, 0227). CNHTRY cift ay, USDTRY aylik.
+#    Tek bir dongu varsaymak yanlis sembol uretir ya da var olani kacirir.
+#    Kopru "hepsini al, filtrele" modeliyle calistigi icin eslesmeyen
+#    aday sembolun maliyeti yok — bu yuzden dongu tahmin etmek yerine
+#    ONUMUZDEKI 6 AYIN hepsi aday uretiliyor, hangisi varsa o gelir.
+OTHER_UNDERLYINGS = {
+    "XU030":   "index",        # BIST 30
+    "X10XB":   "index",        # banka endeksi
+    "USDTRY":  "fx",
+    "CNHTRY":  "fx",
+    "XAUUSD":  "commodity",    # altin / ons USD
+    "XAGUSD":  "commodity",    # gumus / ons USD
+    "XAUTRYM": "commodity",    # altin / TL
+    "XPTUSD":  "commodity",    # platin
+    "XPDUSD":  "commodity",    # paladyum
+}
+
+# Kac ay ileriye aday sembol uretilecek (yukaridaki 2. madde).
+OTHER_MATURITY_MONTHS = 6
 
 TR_PUBLIC_HOLIDAYS_2026 = {
     "2026-01-01",
@@ -144,8 +180,88 @@ def build_futures_symbol_map(base_dt=None):
                 "maturity_code": m["code"],
                 "maturity_label": m["label"],
                 "dtm": m["dtm"],
+                "asset_class": "equity",
             }
     return maturities, symbol_map
+
+
+def get_extended_maturities(base_dt=None, months=OTHER_MATURITY_MONTHS):
+    """
+    Onumuzdeki `months` ayin vade bilgisi.
+
+    get_active_maturities 3 ayla sinirli ve hisse dongusune gore; hisse
+    disi dayanaklarin dongusu farkli oldugu icin daha genis bir aday
+    kumesi gerekiyor.
+    """
+    if base_dt is None:
+        base_dt = datetime.now()
+    start_t2 = add_business_days_tr(base_dt, 2)
+    out = []
+    for offset in range(months):
+        month_index0 = base_dt.month - 1 + offset
+        year = base_dt.year + (month_index0 // 12)
+        month = (month_index0 % 12) + 1
+        expiry = last_business_day_of_month_tr(year, month)
+        expiry_t2 = add_business_days_tr(expiry, 2)
+        out.append({
+            "year": year, "month": month,
+            "code": f"{month:02d}{str(year)[-2:]}",
+            "label": datetime(year, month, 1).strftime("%b %y"),
+            "dtm": max(0, (expiry_t2.date() - start_t2.date()).days),
+        })
+    return out
+
+
+def build_other_symbol_map(base_dt=None):
+    """
+    Hisse disi dayanaklarin vadeli sembol haritasi.
+
+    Eslesmeyen aday sembolun maliyeti yok: kopru gelen her mesaji
+    filtreliyor, var olmayan sembole hic kotasyon gelmiyor.
+    """
+    vadeler = get_extended_maturities(base_dt=base_dt)
+    symbol_map = {}
+    for dayanak, sinif in OTHER_UNDERLYINGS.items():
+        for m in vadeler:
+            symbol_map[f"F_{dayanak}{m['code']}"] = {
+                "underlying": dayanak,
+                "maturity_code": m["code"],
+                "maturity_label": m["label"],
+                "dtm": m["dtm"],
+                "asset_class": sinif,
+            }
+    return vadeler, symbol_map
+
+
+def build_other_snapshot(other_symbol_map, other_mid, other_bid, other_ask):
+    """
+    Hisse disi vadelileri dayanak basina gruplar.
+
+    Ima edilen getiri HESAPLANMIYOR: bu dayanaklarin spot kotasyonu
+    akista yok (bkz. OTHER_UNDERLYINGS aciklamasi). Gelen fiyatlarin
+    kendisi ve vade yapisi gosteriliyor.
+    """
+    out = {}
+    for sembol, meta in other_symbol_map.items():
+        mid = other_mid.get(sembol)
+        if mid is None:
+            continue
+        d = out.setdefault(meta["underlying"], {
+            "underlying": meta["underlying"],
+            "asset_class": meta["asset_class"],
+            "maturities": [],
+        })
+        d["maturities"].append({
+            "code": meta["maturity_code"],
+            "label": meta["maturity_label"],
+            "dtm": meta["dtm"],
+            "bid": other_bid.get(sembol),
+            "ask": other_ask.get(sembol),
+            "mid": mid,
+        })
+    for d in out.values():
+        d["maturities"].sort(key=lambda m: m["dtm"])
+    return out
 
 
 def calc_annualized_yield(spot_mid, fut_mid, dtm):
@@ -783,6 +899,14 @@ def post_futures_rates_batch(rates_by_ticker: dict, maturities: list, ts: str):
     return r.json()
 
 
+def post_other_assets(assets: dict, ts: str):
+    """Hisse disi vadelileri (endeks/doviz/emtia) dashboard'a gonderir."""
+    payload = {"assets": assets, "ts": ts}
+    r = requests.post(FRONTEND_OTHER_ASSETS_ENDPOINT, json=payload, timeout=3)
+    r.raise_for_status()
+    return r.json()
+
+
 def post_options_chain(ticker: str, options: list, ts: str):
     payload = {"ticker": ticker, "options": options, "ts": ts}
     r = requests.post(FRONTEND_OPTIONS_CHAIN_ENDPOINT, json=payload, timeout=3)
@@ -799,8 +923,14 @@ def post_options_chain(ticker: str, options: list, ts: str):
 
 def run_combined_bridge(run_seconds=RUN_SECONDS, post_interval_sec=2.0):
     maturities, futures_symbol_map = build_futures_symbol_map()
+    other_maturities, other_symbol_map = build_other_symbol_map()
     ticker_set = set(TARGET_TICKERS)
     futures_symbol_set = set(futures_symbol_map.keys())
+    other_symbol_set = set(other_symbol_map.keys())
+    other_book = {}
+    other_mid, other_bid, other_ask = {}, {}, {}
+    other_changed = False
+    last_other_post_ts = 0.0
     spot_book = {}
     fut_book = {}
     opt_book = {}
@@ -829,6 +959,8 @@ def run_combined_bridge(run_seconds=RUN_SECONDS, post_interval_sec=2.0):
     delta_rates = 0
     delta_opts = 0
     last_fe_status = "—"
+    enrich_ms = 0.0          # opsiyon zenginlestirmede harcanan sure
+    enrich_n = 0             # kac ticker zenginlestirildi
 
     print("[INFO] Stream bridge started.")
     print("[INFO] Source:", f"{STREAM_HOST}:{STREAM_PORT}")
@@ -920,6 +1052,20 @@ def run_combined_bridge(run_seconds=RUN_SECONDS, post_interval_sec=2.0):
                         fut_ask[symbol] = rec["A"]
                         fut_mid[symbol] = fmid
                         price_changed = True
+                        continue
+
+                    # --- Hisse disi vadeli (endeks / doviz / emtia) ---
+                    if symbol in other_symbol_set:
+                        if not apply_quote(other_book, symbol, bid, ask, bid_sz, ask_sz):
+                            continue
+                        rec = other_book[symbol]
+                        omid = _mid_from_bid_ask(rec)
+                        if omid is None:
+                            continue
+                        other_bid[symbol] = rec["B"]
+                        other_ask[symbol] = rec["A"]
+                        other_mid[symbol] = omid
+                        other_changed = True
             except socket.timeout:
                 pass
 
@@ -939,6 +1085,17 @@ def run_combined_bridge(run_seconds=RUN_SECONDS, post_interval_sec=2.0):
                 last_rates_post_ts = now
                 price_changed = False
 
+            if other_changed or (now - last_other_post_ts >= post_interval_sec):
+                anlik = build_other_snapshot(other_symbol_map, other_mid, other_bid, other_ask)
+                if anlik:
+                    try:
+                        post_other_assets(anlik, datetime.now().strftime("%H:%M:%S.%f")[:-3])
+                        last_fe_status = "OK"
+                    except Exception as e:
+                        last_fe_status = f"ERR:{type(e).__name__}"
+                last_other_post_ts = now
+                other_changed = False
+
             if option_changed_tickers or (now - last_options_post_ts >= post_interval_sec):
                 rates_by_ticker = _build_rates_snapshot(
                     maturities, futures_symbol_map, spot_mid, fut_mid,
@@ -948,9 +1105,15 @@ def run_combined_bridge(run_seconds=RUN_SECONDS, post_interval_sec=2.0):
                     t for t, opts in options_by_ticker.items() if opts
                 )
                 for ticker in tickers_to_post:
+                    # Zenginlestirme suresi olculuyor: her satir icin zimni
+                    # volatilite (ikiye bolme) ve bes Greek hesaplaniyor,
+                    # maliyeti ticker sayisiyla dogrusal buyuyor.
+                    _enr_t0 = time.time()
                     opts_enriched = _build_enriched_options(
                         options_by_ticker.get(ticker, {}), ticker, maturities, spot_mid, rates_by_ticker
                     )
+                    enrich_ms += (time.time() - _enr_t0) * 1000.0
+                    enrich_n += 1
                     if opts_enriched:
                         ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                         try:
@@ -965,13 +1128,17 @@ def run_combined_bridge(run_seconds=RUN_SECONDS, post_interval_sec=2.0):
 
             if now - last_log_ts >= LOG_INTERVAL:
                 total_opt_syms = sum(len(v) for v in options_by_ticker.values())
+                # enr: ticker basina ortalama zenginlestirme suresi
+                enr = f"{enrich_ms / enrich_n:.0f}ms" if enrich_n else "-"
                 print(
                     f"[{datetime.now().strftime('%H:%M:%S')}] "
                     f"ds={delta_spot}  dr={delta_rates}  do={delta_opts}  "
                     f"s={len(last_posted_spot_mid)}/{len(TARGET_TICKERS)}  "
-                    f"o={total_opt_syms}  fe={last_fe_status}"
+                    f"o={total_opt_syms}  enr={enr}  fe={last_fe_status}"
                 )
                 delta_spot = delta_rates = delta_opts = 0
+                enrich_ms = 0.0
+                enrich_n = 0
                 last_log_ts = now
     except KeyboardInterrupt:
         print("\n[STOPPED]")

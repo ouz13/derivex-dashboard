@@ -12,6 +12,7 @@ import math
 import os
 import sys
 import unittest
+from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
@@ -399,6 +400,98 @@ class TestMaturities(unittest.TestCase):
         ornek = next(iter(harita.values()))
         self.assertIn("underlying", ornek)
         self.assertIn("dtm", ornek)
+        self.assertEqual(ornek["asset_class"], "equity")
+
+
+class TestHisseDisiVarliklar(unittest.TestCase):
+    """
+    Endeks / doviz / emtia vadelileri.
+
+    Bunlar akista zaten geliyordu ama TARGET_TICKERS hisse ile sinirli
+    oldugu icin atiliyordu.
+    """
+
+    TARIH = datetime(2026, 9, 15)
+
+    def test_aday_kumesi_alti_ay_kapsar(self):
+        """
+        Vade dongusu varliga gore degisiyor (altinda cift ay, hissede
+        ardisik ay). Dongu tahmin etmek yerine genis aday uretiliyor;
+        kopru zaten filtreledigi icin eslesmeyenin maliyeti yok.
+        """
+        vadeler, harita = B.build_other_symbol_map(self.TARIH)
+        self.assertEqual(len(vadeler), B.OTHER_MATURITY_MONTHS)
+        kodlar = [v["code"] for v in vadeler]
+        # Eylul 2026'dan itibaren alti ay
+        self.assertEqual(kodlar, ["0926", "1026", "1126", "1226", "0127", "0227"])
+        self.assertEqual(len(harita), len(B.OTHER_UNDERLYINGS) * B.OTHER_MATURITY_MONTHS)
+
+    def test_gercek_kayittaki_semboller_kapsaniyor(self):
+        """
+        Ornek kayitta gorulen hisse disi vadeli sembollerin TAMAMI aday
+        kumesine dusmeli; aksi halde veri yine sessizce atilirdi.
+        """
+        _, harita = B.build_other_symbol_map(self.TARIH)
+        kayittakiler = [
+            "F_XAUUSD0227", "F_XAUUSD1026", "F_XAUUSD1226",
+            "F_XAGUSD0227", "F_XAGUSD1026", "F_XAGUSD1226",
+            "F_XAUTRYM0227", "F_XAUTRYM1026", "F_XAUTRYM1226",
+            "F_XU0300227", "F_XU0301026", "F_XU0301226",
+            "F_X10XB0227", "F_XPTUSD1026", "F_XPTUSD1226",
+            "F_XPDUSD1026", "F_XPDUSD1226",
+            "F_CNHTRY1026", "F_CNHTRY1226",
+            "F_USDTRY0926", "F_USDTRY1026",
+        ]
+        for s in kayittakiler:
+            self.assertIn(s, harita, f"{s} aday kumesinde yok, veri atilir")
+
+    def test_varlik_sinifi_etiketleniyor(self):
+        _, harita = B.build_other_symbol_map(self.TARIH)
+        self.assertEqual(harita["F_XAUUSD1026"]["asset_class"], "commodity")
+        self.assertEqual(harita["F_XU0301026"]["asset_class"], "index")
+        self.assertEqual(harita["F_USDTRY1026"]["asset_class"], "fx")
+
+    def test_hisse_haritasiyla_cakismaz(self):
+        """Iki harita ayri tutuluyor; ayni sembol iki yerde islenmemeli."""
+        _, hisse = B.build_futures_symbol_map(self.TARIH)
+        _, diger = B.build_other_symbol_map(self.TARIH)
+        self.assertEqual(set(hisse) & set(diger), set())
+
+    def test_anlik_goruntu_dayanaga_gore_gruplar(self):
+        _, harita = B.build_other_symbol_map(self.TARIH)
+        mid = {"F_XAUUSD1026": 4015.0, "F_XAUUSD1226": 4080.0, "F_USDTRY1026": 41.9}
+        bid = {"F_XAUUSD1026": 4010.0, "F_XAUUSD1226": 4075.0, "F_USDTRY1026": 41.8}
+        ask = {"F_XAUUSD1026": 4020.0, "F_XAUUSD1226": 4085.0, "F_USDTRY1026": 42.0}
+
+        anlik = B.build_other_snapshot(harita, mid, bid, ask)
+        self.assertEqual(set(anlik), {"XAUUSD", "USDTRY"})
+        self.assertEqual(anlik["XAUUSD"]["asset_class"], "commodity")
+        self.assertEqual(len(anlik["XAUUSD"]["maturities"]), 2)
+
+        # Vadeler DTM'e gore sirali olmali
+        dtm = [m["dtm"] for m in anlik["XAUUSD"]["maturities"]]
+        self.assertEqual(dtm, sorted(dtm))
+
+    def test_kotasyonu_olmayan_sembol_girmez(self):
+        """Fiyati gelmemis aday sembol tabloda bos satir uretmemeli."""
+        _, harita = B.build_other_symbol_map(self.TARIH)
+        anlik = B.build_other_snapshot(harita, {}, {}, {})
+        self.assertEqual(anlik, {})
+
+    def test_ima_edilen_getiri_URETILMEZ(self):
+        """
+        Bu dayanaklarin spot kotasyonu akista yok; getiri fut/spot'a
+        dayandigi icin hesaplanamaz. Uydurulmus bir getiri alanini
+        sizdirmadigimiz burada sabitleniyor.
+        """
+        _, harita = B.build_other_symbol_map(self.TARIH)
+        anlik = B.build_other_snapshot(
+            harita, {"F_XAUUSD1026": 4015.0}, {"F_XAUUSD1026": 4010.0},
+            {"F_XAUUSD1026": 4020.0})
+        vade = anlik["XAUUSD"]["maturities"][0]
+        self.assertEqual(set(vade), {"code", "label", "dtm", "bid", "ask", "mid"})
+        for yasak in ("rate", "yield", "adj_rate", "spot_mid"):
+            self.assertNotIn(yasak, vade)
 
 
 if __name__ == "__main__":

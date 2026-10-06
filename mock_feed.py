@@ -47,6 +47,22 @@ OPSIYON_TICKERS = [
     "VAKBN", "YKBNK",
 ]
 
+# Hisse disi dayanaklarin referans seviyeleri (endeks / doviz / emtia).
+# Gercek piyasa buyukluk mertebelerine yakin secildi ki tablo inandirici
+# gorunsun; bunlarin spot kotasyonu canli akista da yok, bu yuzden mock
+# tarafta da yalnizca vadeli fiyat uretiliyor.
+DIGER_TEMEL = {
+    "XU030":   (11_250.0, "index"),
+    "X10XB":   (18_400.0, "index"),
+    "USDTRY":  (41.85, "fx"),
+    "CNHTRY":  (5.78, "fx"),
+    "XAUUSD":  (4_015.0, "commodity"),
+    "XAGUSD":  (48.20, "commodity"),
+    "XAUTRYM": (5_320.0, "commodity"),
+    "XPTUSD":  (1_585.0, "commodity"),
+    "XPDUSD":  (1_430.0, "commodity"),
+}
+
 YILLIK_FAIZ = 0.30          # vadeli fiyatlarin ima edecegi getiri
 SPOT_SPREAD = 0.0015        # spot alis-satis araligi (%0.15)
 FUT_SPREAD = 0.0045         # vadeli spread daha genis; bid/ask getirilerinin
@@ -187,6 +203,36 @@ def bir_tur(maturities, fut_map, durum, sessiz=False):
             except Exception:
                 pass
 
+    # Hisse disi vadeliler (endeks / doviz / emtia). Canli tarafta
+    # oldugu gibi burada da ima edilen getiri uretilmiyor: spot yok.
+    diger = {}
+    for dayanak, (taban, sinif) in DIGER_TEMEL.items():
+        seviye = durum.setdefault("_d_" + dayanak, taban)
+        seviye *= (1 + random.gauss(0, ADIM_ORANI))
+        seviye = max(taban * 0.94, min(taban * 1.06, seviye))
+        durum["_d_" + dayanak] = seviye
+        basamak = 2 if seviye >= 100 else 4
+        vadeler = []
+        for m in maturities:
+            if m["dtm"] <= 0:
+                continue
+            f = seviye * (1 + YILLIK_FAIZ * m["dtm"] / 365.0) * (1 + random.gauss(0, 0.0012))
+            yari = f * FUT_SPREAD / 2
+            vadeler.append({
+                "code": m["code"], "label": m["label"], "dtm": m["dtm"],
+                "bid": yuvarla(f - yari, basamak),
+                "ask": yuvarla(f + yari, basamak),
+                "mid": yuvarla(f, basamak),
+            })
+        if vadeler:
+            diger[dayanak] = {"underlying": dayanak, "asset_class": sinif,
+                              "maturities": vadeler}
+    if diger:
+        try:
+            B.post_other_assets(diger, ts)
+        except Exception:
+            pass
+
     # Tur sonunda anlik goruntuyu zorla yaz: aralikli yazim tek turluk
     # calistirmada (--once) yarim dolu bir goruntu birakirdi.
     try:
@@ -195,8 +241,8 @@ def bir_tur(maturities, fut_map, durum, sessiz=False):
         pass
 
     if not sessiz:
-        print(f"[MOCK] {ts}  spot={spot_n}  vadeli={len(fut_mid)}  opsiyon_satir={opt_n}",
-              flush=True)
+        print(f"[MOCK] {ts}  spot={spot_n}  vadeli={len(fut_mid)}  "
+              f"opsiyon_satir={opt_n}  diger_varlik={len(diger)}", flush=True)
     return spot_n, len(fut_mid), opt_n
 
 
