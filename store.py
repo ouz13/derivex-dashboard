@@ -164,6 +164,31 @@ CREATE TABLE IF NOT EXISTS model_version (
 CREATE INDEX IF NOT EXISTS ix_model_version_lookup
   ON model_version (model, scope, ts);
 
+-- Canli tahmin kaydi.
+--
+-- backtest.py GECMIS veri uzerinde tek seferlik calisir. Bu tablo ise
+-- uretilen her tahmini HEDEF TARIHIYLE birlikte saklar; ufuk dolunca
+-- gerceklesen deger yazilir ve hata hesaplanir. "30 gun once GARCH %45
+-- dedi, gerceklesen %38 oldu" sorusunun cevabi burada.
+--
+-- realized NULL ise pencere henuz kapanmamistir.
+CREATE TABLE IF NOT EXISTS forecast_log (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts         TEXT NOT NULL,        -- tahminin uretildigi an
+  made_on    TEXT NOT NULL,        -- uretildigi gun (YYYY-MM-DD)
+  target_on  TEXT NOT NULL,        -- ufkun doldugu gun
+  ticker     TEXT NOT NULL,
+  model      TEXT NOT NULL,
+  horizon_d  INTEGER NOT NULL,
+  forecast   REAL NOT NULL,        -- yillik volatilite, yuzde
+  realized   REAL,                 -- pencere kapaninca doldurulur
+  scored_at  TEXT,
+  data_mode  TEXT NOT NULL,
+  UNIQUE (ticker, model, horizon_d, made_on, data_mode)
+);
+CREATE INDEX IF NOT EXISTS ix_forecast_log_hedef
+  ON forecast_log (data_mode, realized, target_on);
+
 -- En son tam durum. Yeniden baslatmada arayuzu beslemek icin;
 -- canli modda seans disinda hic tick gelmeyecegi icin bu sart.
 CREATE TABLE IF NOT EXISTS snapshot (
@@ -408,6 +433,91 @@ class Store:
                 "meta": _json_oku(s["meta"]),
             })
         return cikti
+
+    # -- canli tahmin kaydi -----------------------------------------------
+
+    def tahmin_kaydet(self, ticker, model, ufuk_gun, tahmin, uretim_gunu=None):
+        """
+        Bir tahmini hedef tarihiyle birlikte kaydeder.
+
+        Ayni gun ayni (ticker, model, ufuk) icin ikinci kayit acilmaz:
+        garch.py 15 dakikada bir calisiyor, her kosusu yeni satir
+        acsaydi gun icinde onlarca kopya olusur ve puanlama ayni tahmini
+        defalarca sayardi.
+        """
+        from datetime import date, timedelta
+        gun = uretim_gunu or datetime.now(timezone.utc).date().isoformat()
+        hedef = (date.fromisoformat(gun) + timedelta(days=int(ufuk_gun))).isoformat()
+        ts = _simdi()
+
+        def islem():
+            self.conn.execute(
+                "INSERT OR IGNORE INTO forecast_log "
+                "(ts, made_on, target_on, ticker, model, horizon_d, forecast, data_mode) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (ts, gun, hedef, str(ticker).upper(), model, int(ufuk_gun),
+                 float(tahmin), self.data_mode))
+
+        return self._yaz(islem)
+
+    def puanlanacak_tahminler(self, bugun=None):
+        """Ufku dolmus ama henuz puanlanmamis tahminler."""
+        bugun = bugun or datetime.now(timezone.utc).date().isoformat()
+        satirlar = self.conn.execute(
+            "SELECT id, ticker, model, horizon_d, forecast, made_on, target_on "
+            "FROM forecast_log WHERE data_mode = ? AND realized IS NULL "
+            "AND target_on <= ? ORDER BY target_on",
+            (self.data_mode, bugun)).fetchall()
+        return [dict(s) for s in satirlar]
+
+    def tahmin_puanla(self, kayit_id, gerceklesen):
+        def islem():
+            self.conn.execute(
+                "UPDATE forecast_log SET realized = ?, scored_at = ? WHERE id = ?",
+                (float(gerceklesen), _simdi(), int(kayit_id)))
+
+        return self._yaz(islem)
+
+    def tahmin_skorlari(self, ufuk=None):
+        """
+        Puanlanmis tahminlerden model basina RMSE / MAE / yanlilik.
+
+        Yanlilik ayri veriliyor: RMSE modelin sistematik olarak yuksek
+        mi alcak mi tahmin ettigini gizler.
+        """
+        sorgu = ("SELECT model, forecast, realized FROM forecast_log "
+                 "WHERE data_mode = ? AND realized IS NOT NULL")
+        arg = [self.data_mode]
+        if ufuk is not None:
+            sorgu += " AND horizon_d = ?"
+            arg.append(int(ufuk))
+
+        hatalar = {}
+        for s in self.conn.execute(sorgu, arg):
+            hatalar.setdefault(s["model"], []).append(s["forecast"] - s["realized"])
+
+        out = {}
+        for model, h in hatalar.items():
+            n = len(h)
+            out[model] = {
+                "rmse": (sum(x * x for x in h) / n) ** 0.5,
+                "mae": sum(abs(x) for x in h) / n,
+                "bias": sum(h) / n,
+                "n": n,
+            }
+        return out
+
+    def tahmin_ozeti(self):
+        bekleyen = self.conn.execute(
+            "SELECT COUNT(*) FROM forecast_log WHERE data_mode = ? AND realized IS NULL",
+            (self.data_mode,)).fetchone()[0]
+        puanlanmis = self.conn.execute(
+            "SELECT COUNT(*) FROM forecast_log WHERE data_mode = ? AND realized IS NOT NULL",
+            (self.data_mode,)).fetchone()[0]
+        enYakin = self.conn.execute(
+            "SELECT MIN(target_on) FROM forecast_log WHERE data_mode = ? AND realized IS NULL",
+            (self.data_mode,)).fetchone()[0]
+        return {"pending": bekleyen, "scored": puanlanmis, "next_due": enYakin}
 
     # -- okuma ------------------------------------------------------------
 
@@ -657,6 +767,11 @@ def _push_stats(taban_url=None):
     try:
         govde = d.istatistik()
         govde["versions"] = d.model_surumleri(limit=10)
+        # Canli tahmin dogrulugu: ufku dolmus tahminlerin gerceklesenle
+        # karsilastirmasi. Kalibrasyon RMSE'sinden farkli — o gecmise
+        # uyumu, bu ileriyi tutturmayi olcer.
+        govde["forecast"] = d.tahmin_ozeti()
+        govde["forecast_scores"] = d.tahmin_skorlari(ufuk=30)
         r = requests.post(f"{taban}/api/store-stats", json=govde, timeout=3)
         r.raise_for_status()
         return govde

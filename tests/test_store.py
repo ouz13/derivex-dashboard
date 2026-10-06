@@ -392,3 +392,94 @@ class TestSayiDonusturme(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestTahminKaydi(DepoTemel):
+    """
+    Canli tahmin kaydi ve puanlama.
+
+    backtest.py gecmis veri uzerinde tek seferlik calisir; bu tablo
+    uretilen tahmini hedef tarihiyle saklar ve ufuk dolunca puanlar.
+    """
+
+    def test_kaydedilir_ve_bekleyen_sayilir(self):
+        self.d.tahmin_kaydet("THYAO", "GARCH(1,1)", 30, 42.0, uretim_gunu="2026-09-01")
+        o = self.d.tahmin_ozeti()
+        self.assertEqual(o["pending"], 1)
+        self.assertEqual(o["scored"], 0)
+        self.assertEqual(o["next_due"], "2026-10-01", "hedef gun ufuk kadar ileride olmali")
+
+    def test_ayni_gun_ayni_model_IKI_KEZ_yazilmaz(self):
+        """
+        garch.py 15 dakikada bir calisiyor. Her kosu yeni satir acsaydi
+        gun icinde onlarca kopya olusur ve puanlama ayni tahmini
+        defalarca sayardi.
+        """
+        for _ in range(5):
+            self.d.tahmin_kaydet("THYAO", "GARCH(1,1)", 30, 42.0, uretim_gunu="2026-09-01")
+        self.assertEqual(self.d.tahmin_ozeti()["pending"], 1)
+
+    def test_farkli_ufuk_ve_model_ayri_kayit(self):
+        self.d.tahmin_kaydet("THYAO", "GARCH(1,1)", 30, 42.0, uretim_gunu="2026-09-01")
+        self.d.tahmin_kaydet("THYAO", "GARCH(1,1)", 15, 44.0, uretim_gunu="2026-09-01")
+        self.d.tahmin_kaydet("THYAO", "EGARCH(1,1)", 30, 41.0, uretim_gunu="2026-09-01")
+        self.d.tahmin_kaydet("GARAN", "GARCH(1,1)", 30, 39.0, uretim_gunu="2026-09-01")
+        self.assertEqual(self.d.tahmin_ozeti()["pending"], 4)
+
+    def test_yalnizca_ufku_DOLMUS_tahminler_puanlanacak_listede(self):
+        from datetime import date, timedelta
+        bugun = date(2026, 10, 6)
+        # Ufku dolmus
+        self.d.tahmin_kaydet("THYAO", "GARCH(1,1)", 30, 42.0,
+                             uretim_gunu=(bugun - timedelta(days=60)).isoformat())
+        # Ufku dolmamis
+        self.d.tahmin_kaydet("GARAN", "GARCH(1,1)", 30, 40.0,
+                             uretim_gunu=bugun.isoformat())
+        bekleyen = self.d.puanlanacak_tahminler(bugun=bugun.isoformat())
+        self.assertEqual(len(bekleyen), 1)
+        self.assertEqual(bekleyen[0]["ticker"], "THYAO")
+
+    def test_puanlama_skorlari_uretir(self):
+        self.d.tahmin_kaydet("THYAO", "GARCH(1,1)", 30, 45.0, uretim_gunu="2026-08-01")
+        self.d.tahmin_kaydet("THYAO", "Naive", 30, 55.0, uretim_gunu="2026-08-01")
+        bekleyen = self.d.puanlanacak_tahminler(bugun="2026-10-06")
+        for k in bekleyen:
+            self.d.tahmin_puanla(k["id"], 40.0)     # gerceklesen %40
+
+        s = self.d.tahmin_skorlari(ufuk=30)
+        self.assertAlmostEqual(s["GARCH(1,1)"]["bias"], 5.0, places=6)
+        self.assertAlmostEqual(s["Naive"]["bias"], 15.0, places=6)
+        self.assertAlmostEqual(s["GARCH(1,1)"]["mae"], 5.0, places=6)
+        self.assertEqual(self.d.tahmin_ozeti()["scored"], 2)
+        self.assertEqual(self.d.tahmin_ozeti()["pending"], 0)
+
+    def test_yanlilik_isareti_yonu_gosterir(self):
+        """Yuksek tahmin pozitif, dusuk tahmin negatif yanlilik vermeli."""
+        self.d.tahmin_kaydet("A", "M", 30, 60.0, uretim_gunu="2026-08-01")
+        self.d.tahmin_kaydet("B", "M", 30, 20.0, uretim_gunu="2026-08-01")
+        for k in self.d.puanlanacak_tahminler(bugun="2026-10-06"):
+            self.d.tahmin_puanla(k["id"], 40.0)
+        self.assertAlmostEqual(self.d.tahmin_skorlari(ufuk=30)["M"]["bias"], 0.0, places=6)
+
+    def test_ufka_gore_suzulur(self):
+        self.d.tahmin_kaydet("A", "M", 30, 50.0, uretim_gunu="2026-08-01")
+        self.d.tahmin_kaydet("A", "M", 15, 45.0, uretim_gunu="2026-08-01")
+        for k in self.d.puanlanacak_tahminler(bugun="2026-10-06"):
+            self.d.tahmin_puanla(k["id"], 40.0)
+        self.assertAlmostEqual(self.d.tahmin_skorlari(ufuk=30)["M"]["bias"], 10.0, places=6)
+        self.assertAlmostEqual(self.d.tahmin_skorlari(ufuk=15)["M"]["bias"], 5.0, places=6)
+        self.assertEqual(self.d.tahmin_skorlari()["M"]["n"], 2, "ufuksuz cagri hepsini almali")
+
+    def test_puanlanmamis_tahmin_skora_girmez(self):
+        self.d.tahmin_kaydet("A", "M", 30, 50.0, uretim_gunu="2026-08-01")
+        self.assertEqual(self.d.tahmin_skorlari(), {})
+
+    def test_mod_ayrimi_tahminlerde_de_gecerli(self):
+        self.d.tahmin_kaydet("THYAO", "M", 30, 42.0, uretim_gunu="2026-08-01")
+        canli = S.Store(self.yol, data_mode="LIVE")
+        try:
+            self.assertEqual(canli.tahmin_ozeti()["pending"], 0,
+                             "MOCK tahmini LIVE modda gorunmemeli")
+            self.assertEqual(canli.puanlanacak_tahminler(bugun="2026-10-06"), [])
+        finally:
+            canli.kapat()

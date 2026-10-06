@@ -96,9 +96,16 @@ const MOCK_MODE = DATA_MODE === 0;
 
 // Saglik esikleri (saniye). Isletme ortamina gore degisebilsin diye
 // ortam degiskeninden okunuyor.
-const { degerlendir: saglikDegerlendir } = require('./health.js');
+const { degerlendir: saglikDegerlendir, alarmKarari, yeniAlarmDurumu } = require('./health.js');
 const HEALTH_FRESH_SEC = Number(process.env.HEALTH_FRESH_SEC) || 60;
 const HEALTH_STALE_SEC = Number(process.env.HEALTH_STALE_SEC) || 900;
+// Alarm: durum kac saniyede bir yoklanir ve kac ust uste gozlem
+// onay sayilir. Webhook verilmezse alarmlar yalnizca kaydedilir.
+const HEALTH_POLL_SEC = Number(process.env.HEALTH_POLL_SEC) || 30;
+const HEALTH_CONFIRM = Number(process.env.HEALTH_CONFIRM) || 2;
+const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL || '';
+const ALERTS_FILE = path.join(__dirname, 'health_alerts.jsonl');
+const ALERTS_MAX = 200;
 
 // Degistirilemez denetim izi: fiyatlama ve risk koşuları zincirlenmiş
 // kayıtlara yazılır, geçmişe müdahale doğrulamada yakalanır.
@@ -131,8 +138,67 @@ const serverState = {
   // Kaynak basina son veri alim zamani (sunucunun gorme ani).
   // Akisin kendi ts'i yalnizca saat:dakika:saniye tasidigi icin yas
   // hesabina elverisli degil; saglik kontrolu bunu kullanir.
-  lastPostAt: { spot: null, futures: null, options: null, other: null }
+  lastPostAt: { spot: null, futures: null, options: null, other: null },
+  // Saglik durumu gecisleri. Degerlendirme tek basina kimseye haber
+  // vermiyor; burada gecisler tutulup bildirilir.
+  healthAlerts: [],
+  healthAlertState: yeniAlarmDurumu()
 };
+
+// Onceki alarmlari diskten yukle: yeniden baslatma gecmisi silmemeli.
+try {
+  if (fs.existsSync(ALERTS_FILE)) {
+    serverState.healthAlerts = fs.readFileSync(ALERTS_FILE, 'utf8')
+      .split('\n').filter(Boolean)
+      .map((s) => { try { return JSON.parse(s); } catch { return null; } })
+      .filter(Boolean)
+      .slice(-ALERTS_MAX);
+  }
+} catch (_) {}
+
+function saglikRaporu() {
+  const sonModel = Object.values(serverState.modelParams || {})
+    .map((v) => v && v.ts).filter(Boolean).sort();
+  return saglikDegerlendir({
+    lastPostAt: serverState.lastPostAt,
+    storeStats: serverState.storeStats,
+    sayimlar: {
+      spot: Object.keys(serverState.spotByTicker).length,
+      futures: Object.keys(serverState.futuresRatesByTicker).length,
+      options: Object.keys(serverState.optionsChainByTicker).length,
+      other: Object.keys(serverState.otherAssets).length,
+    },
+    modelTs: sonModel.length ? sonModel[sonModel.length - 1] : null,
+    egriTs: serverState.yieldCurve ? serverState.yieldCurve.ts : null,
+    mockMu: MOCK_MODE,
+    esikler: { taze: HEALTH_FRESH_SEC, bayat: HEALTH_STALE_SEC },
+  });
+}
+
+function alarmYokla() {
+  const rapor = saglikRaporu();
+  const karar = alarmKarari(serverState.healthAlertState, rapor, HEALTH_CONFIRM);
+  serverState.healthAlertState = karar.durum;
+  if (!karar.alarm) return;
+
+  const kayit = { ...karar.alarm, mode: MOCK_MODE ? 'MOCK' : 'LIVE' };
+  serverState.healthAlerts.push(kayit);
+  if (serverState.healthAlerts.length > ALERTS_MAX) {
+    serverState.healthAlerts = serverState.healthAlerts.slice(-ALERTS_MAX);
+  }
+  try { fs.appendFileSync(ALERTS_FILE, JSON.stringify(kayit) + '\n', 'utf8'); } catch (_) {}
+  console.log(`[ALERT] ${kayit.summary}`);
+
+  // Webhook istege bagli: tanimli degilse alarm yine kaydedilir.
+  // Basarisizligi sunucuyu etkilememeli.
+  if (ALERT_WEBHOOK_URL) {
+    fetch(ALERT_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(kayit),
+    }).catch((e) => console.warn('[ALERT] webhook gonderilemedi:', e.message));
+  }
+}
 
 const DIVIDENDS_FILE = path.join(__dirname, 'dividends.json');
 try {
@@ -2756,8 +2822,37 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
       });
     }
 
+    // Durum gecisi gecmisi. Yalnizca Summary sayfasinda var.
+    function alarmlariGoster() {
+      var ozet = document.getElementById('alarmOzet');
+      var satirlar = document.getElementById('alarmSatirlar');
+      if (!ozet || !satirlar) return;
+      fetch('/api/health-alerts?limit=25').then(function (r) { return r.json(); }).then(function (d) {
+        ozet.textContent = d.total + ' transition(s) recorded · polled every '
+          + d.poll_s + 's · confirmed after ' + d.confirm_samples
+          + ' samples · webhook ' + d.webhook;
+        if (!d.alerts || !d.alerts.length) {
+          satirlar.innerHTML = '<tr><td colspan="3" style="padding:6px 10px;color:#64748b;">'
+            + 'no status change since startup</td></tr>';
+          return;
+        }
+        satirlar.innerHTML = d.alerts.map(function (a) {
+          var renk = SAGLIK_RENK[a.to] || '#64748b';
+          var ok = a.direction === 'worse' ? '↓' : '↑';
+          return '<tr>'
+            + '<td>' + String(a.ts || '').replace('T', ' ').slice(0, 19) + '</td>'
+            + '<td style="color:' + renk + ';font-weight:700;">' + ok + ' '
+            + (a.from ? a.from + ' → ' : '') + a.to + '</td>'
+            + '<td>' + (a.failing && a.failing.length ? a.failing.join(', ') : '—') + '</td>'
+            + '</tr>';
+        }).join('');
+      }).catch(function () { ozet.textContent = 'unreachable'; });
+    }
+
     saglikGoster();
+    alarmlariGoster();
     setInterval(saglikGoster, 15000);
+    setInterval(alarmlariGoster, 30000);
 
     // Hisse disi vadeliler: endeks, doviz, emtia. Dayanak basina vade
     // yapisi gosteriliyor; ima edilen getiri YOK cunku bu dayanaklarin
@@ -2880,6 +2975,47 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         }).join('');
         document.getElementById('depoVersions').innerHTML = satirlar
           || '<tr><td colspan="6" style="padding:6px 10px;color:#64748b;">no model versions recorded yet</td></tr>';
+
+        // Canli tahmin dogrulugu. Kalibrasyon RMSE'sinden farkli:
+        // o gecmise UYUMU, bu ileriyi TUTTURMAYI olcer.
+        var fEl = document.getElementById('depoTahmin');
+        if (fEl) {
+          var f = s.forecast || {};
+          var sk = s.forecast_scores || {};
+          var modeller = Object.keys(sk);
+          var bas = (f.scored || 0) + ' scored, ' + (f.pending || 0) + ' awaiting horizon';
+          if (f.next_due) bas += ' · next due ' + f.next_due;
+          if (!modeller.length) {
+            fEl.innerHTML = '<div style="color:#64748b;">' + bas
+              + (f.pending ? ' — no forecast has reached its horizon yet'
+                           : ' — run python3 garch.py to start logging') + '</div>';
+          } else {
+            // En dusuk RMSE isaretlenir
+            var enIyi = modeller.reduce(function (a, b) {
+              return sk[a].rmse <= sk[b].rmse ? a : b; });
+            var satir = modeller.sort().map(function (m) {
+              var x = sk[m];
+              return '<tr>'
+                + '<td style="padding:3px 10px;' + (m === enIyi ? 'font-weight:700;' : '') + '">'
+                + m + (m === enIyi ? ' ←' : '') + '</td>'
+                + '<td style="padding:3px 10px;text-align:right;">' + x.rmse.toFixed(2) + '</td>'
+                + '<td style="padding:3px 10px;text-align:right;">' + x.mae.toFixed(2) + '</td>'
+                + '<td style="padding:3px 10px;text-align:right;">'
+                + (x.bias >= 0 ? '+' : '') + x.bias.toFixed(2) + '</td>'
+                + '<td style="padding:3px 10px;text-align:right;">' + x.n + '</td>'
+                + '</tr>';
+            }).join('');
+            fEl.innerHTML = '<div style="color:#64748b;margin-bottom:6px;">' + bas + '</div>'
+              + '<table style="border-collapse:collapse;font-size:11px;">'
+              + '<thead><tr style="background:#0f1728;color:#fff;">'
+              + '<th style="padding:4px 10px;text-align:left;">Model (30d)</th>'
+              + '<th style="padding:4px 10px;text-align:right;">RMSE</th>'
+              + '<th style="padding:4px 10px;text-align:right;">MAE</th>'
+              + '<th style="padding:4px 10px;text-align:right;">Bias</th>'
+              + '<th style="padding:4px 10px;text-align:right;">n</th>'
+              + '</tr></thead><tbody>' + satir + '</tbody></table>';
+          }
+        }
         if (govde) govde.style.display = '';
       }).catch(function () { durum.textContent = 'unreachable'; });
     }
@@ -3720,6 +3856,14 @@ function toolsContent(toolsTab) {
       +       '</tr></thead>'
       +       '<tbody id="depoVersions"></tbody>'
       +     '</table></div>'
+      +     '<div style="margin-top:14px;border-top:1px solid #e2e8f0;padding-top:10px;">'
+      +       '<div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;'
+      +       'letter-spacing:.06em;margin-bottom:4px;">Forecast Accuracy (live)</div>'
+      +       '<p class="rv-top-note" style="margin:0 0 8px;">Forecasts are logged with their '
+      +       'target date and scored once the horizon closes. This is not the calibration RMSE: '
+      +       'that measures fit to the past, this measures whether the forecast held.</p>'
+      +       '<div id="depoTahmin" style="font-size:11px;"></div>'
+      +     '</div>'
       +   '</div>'
       + '</div>'
       + '<div class="table-wrap"><table class="rv-table"><thead><tr>'
@@ -4139,6 +4283,17 @@ function renderRoute(url, state) {
         + '<th>Check</th><th>Status</th><th>Detail</th><th>Age</th>'
         + '</tr></thead><tbody id="saglikSatirlar"></tbody></table></div>'
         + '<p id="saglikEsik" style="font-size:11px;color:#94a3b8;margin-top:10px;"></p>'
+        + '<div style="margin-top:18px;border-top:1px solid #e2e8f0;padding-top:14px;">'
+        +   '<div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;'
+        +   'letter-spacing:.06em;margin-bottom:4px;">Status Changes</div>'
+        +   '<p class="rv-top-note" style="margin:0 0 8px;">Only <b>transitions</b> are recorded, '
+        +   'and a new status must be seen twice in a row before it counts &mdash; otherwise a '
+        +   'single late update would raise an alert and clear it a second later.</p>'
+        +   '<div id="alarmOzet" style="font-size:12px;color:#64748b;margin-bottom:8px;"></div>'
+        +   '<div class="table-wrap"><table class="rv-table"><thead><tr>'
+        +   '<th>When (UTC)</th><th>Change</th><th>Failing checks</th>'
+        +   '</tr></thead><tbody id="alarmSatirlar"></tbody></table></div>'
+        + '</div>'
         + '</div>',
     });
   }
@@ -5192,24 +5347,25 @@ const server = http.createServer(async (req, res) => {
   // normal bir "degraded" haldir ve konteyneri yeniden baslatmayi
   // gerektirmez.
   if (url.pathname === '/health') {
-    const sonModel = Object.values(serverState.modelParams || {})
-      .map((v) => v && v.ts).filter(Boolean).sort();
-    const rapor = saglikDegerlendir({
-      lastPostAt: serverState.lastPostAt,
-      storeStats: serverState.storeStats,
-      sayimlar: {
-        spot: Object.keys(serverState.spotByTicker).length,
-        futures: Object.keys(serverState.futuresRatesByTicker).length,
-        options: Object.keys(serverState.optionsChainByTicker).length,
-        other: Object.keys(serverState.otherAssets).length,
-      },
-      modelTs: sonModel.length ? sonModel[sonModel.length - 1] : null,
-      egriTs: serverState.yieldCurve ? serverState.yieldCurve.ts : null,
-      mockMu: MOCK_MODE,
-      esikler: { taze: HEALTH_FRESH_SEC, bayat: HEALTH_STALE_SEC },
-    });
+    const rapor = saglikRaporu();
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ ok: rapor.status !== 'unhealthy', ...rapor }));
+    return;
+  }
+
+  // Durum gecisi gecmisi.
+  if (url.pathname === '/api/health-alerts' && req.method === 'GET') {
+    const n = Math.min(ALERTS_MAX, Math.max(1, Number(url.searchParams.get('limit')) || 25));
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      ok: true,
+      total: serverState.healthAlerts.length,
+      current: serverState.healthAlertState.aktif,
+      webhook: ALERT_WEBHOOK_URL ? 'configured' : 'not configured',
+      confirm_samples: HEALTH_CONFIRM,
+      poll_s: HEALTH_POLL_SEC,
+      alerts: serverState.healthAlerts.slice(-n).reverse(),
+    }));
     return;
   }
 
@@ -5912,6 +6068,12 @@ server.listen(process.env.PORT || 5173, process.env.HOST || '127.0.0.1', () => {
   // while the dashboard is running.
   refreshRealizedVolsInBackground('startup');
   setInterval(() => refreshRealizedVolsInBackground('scheduled'), realizedVolCacheTtlMs);
+
+  // Saglik durumunu duzenli yokla. Tarayicinin /health cagrilarina
+  // guvenmek yetmez: kimse ekrana bakmiyorken de gecisin yakalanmasi
+  // gerekiyor — alarmin varlik sebebi bu.
+  setInterval(alarmYokla, HEALTH_POLL_SEC * 1000).unref?.();
+  alarmYokla();
 });
 
 function refreshRealizedVolsInBackground(reason) {

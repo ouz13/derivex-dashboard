@@ -72,7 +72,9 @@ IdealData REST ─────────────────────�
 | `idealdata_probe.py` | Bağlantı/yetki teşhis aracı |
 | `store.py` | SQLite kalıcılık katmanı — zaman serisi, model sürümleme |
 | `model_fallback.js` | Kalibrasyon başarısızlığında fallback zinciri |
-| `health.js` | Servis sağlığı değerlendirmesi (`/health`) |
+| `health.js` | Servis sağlığı değerlendirmesi ve alarm kararı (`/health`) |
+| `watchlist.js` | İzleme listesi |
+| `backtest.py` | Kayan kökenli çapraz doğrulama |
 | `bench_stream.py` | Veri boru hattı kapasite ölçümü |
 | `garch.py` | Depodaki geçmişten gerçekleşmiş volatilite ve GARCH(1,1) |
 | `yield_curve.py` / `fit_curve.py` | Nelson-Siegel-Svensson eğri uydurma |
@@ -544,3 +546,45 @@ karşılığı yok demektir. Çıktı bunu açıkça yazar.
 
 Yanlılık (bias) sütunu ayrıca gösterilir: RMSE tek başına modelin sistematik
 olarak yüksek mi alçak mı tahmin ettiğini gizler.
+
+## Uyarılar
+
+`/health` durumu **değerlendiriyordu** ama kimseye **haber vermiyordu** —
+ekrana bakmıyorsanız beslemenin saat 11'de öldüğünü fark etmezsiniz. Artık
+sunucu durumu `HEALTH_POLL_SEC` (varsayılan 30 sn) aralıklarla yokluyor ve
+geçişleri kaydediyor. Geçmiş `Market → Summary` sayfasında.
+
+İki kural gürültüyü engelliyor:
+
+- **Yalnızca değişimde** alarm üretilir. Aynı durumu her yoklamada bildirmek
+  30 saniyede bir aynı satırı yazmak olurdu ve gerçek bir değişim arada
+  kaybolurdu.
+- **Yeni durum üst üste `HEALTH_CONFIRM` kez** (varsayılan 2) görülmeden kabul
+  edilmez. Tek bir geç kalmış POST yüzünden alarm üretip bir saniye sonra geri
+  dönmek alarmı değersizleştirir.
+
+Sağlıklı açılış alarm üretmez (her yeniden başlatmada gürültü olurdu), ama
+**bozuk açılış üretir** — sistemin bozuk kalktığını bilmek gerekir.
+
+`ALERT_WEBHOOK_URL` tanımlıysa her geçiş oraya POST edilir. Tanımlı değilse
+alarmlar yine kaydedilir (`health_alerts.jsonl`, yeniden başlatmaya dayanıklı).
+
+## Canlı tahmin doğruluğu
+
+`backtest.py` geçmiş veri üzerinde tek seferlik çalışır. Bunun yanında
+üretilen **her tahmin hedef tarihiyle** kaydediliyor (`forecast_log`); ufuk
+dolunca gerçekleşen volatiliteyle karşılaştırılıp puanlanıyor. Sonuç Discount
+Rate sekmesindeki **Forecast Accuracy** bloğunda.
+
+Bu, kalibrasyon RMSE'sinden farklı bir şey ölçer: o, modelin geçmişe ne kadar
+iyi **uyduğunu**; bu, ileriyi ne kadar iyi **tuttuğunu**.
+
+Gün başına model ve ufuk için tek kayıt açılır — `garch.py` 15 dakikada bir
+çalıştığı için aksi halde kopyalar birikir ve aynı tahmin defalarca sayılırdı.
+
+İlk sonuç bir ufuk süresi sonra gelir; o zamana kadar panel "awaiting horizon"
+yazar, uydurma bir sayı göstermez.
+
+## İşletim
+
+Günlük işletim, arıza senaryoları ve bakım için → **[RUNBOOK.md](RUNBOOK.md)**

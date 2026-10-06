@@ -167,10 +167,87 @@
     };
   }
 
+  // -------------------------------------------------------------------
+  // Durum gecisi ve alarm karari
+  //
+  // Degerlendirme tek basina kimseye haber vermiyor: ekrana bakilmiyorsa
+  // beslemenin saat 11'de oldugu fark edilmez. Burasi "ne zaman alarm
+  // uretilir" sorusunu cevapliyor.
+  //
+  // IKI KURAL:
+  //   1. Yalnizca DEGISIMDE alarm uretilir. Ayni durumu her
+  //      degerlendirmede bildirmek, 30 saniyede bir ayni satiri yazmak
+  //      olurdu ve gercek bir degisim gurultude kaybolurdu.
+  //   2. Yeni durum ONAY ESIGI kadar ust uste gorulmeden kabul
+  //      edilmez. Tek bir gec kalmis POST yuzunden "degraded" alarmi
+  //      uretip bir sonraki saniye geri donmek, alarmi degersizlestirir.
+  // -------------------------------------------------------------------
+
+  var ONAY_ESIGI = 2;
+
+  function yeniAlarmDurumu() {
+    return { aktif: null, bekleyen: null, sayac: 0 };
+  }
+
+  /**
+   * durum  — yeniAlarmDurumu() ile uretilmis, cagiran tarafindan tasinir
+   * rapor  — degerlendir() ciktisi
+   * esik   — kac ust uste gozlem onay sayilir (varsayilan 2)
+   *
+   * doner: {durum, alarm}  alarm yoksa null
+   */
+  function alarmKarari(durum, rapor, esik) {
+    durum = durum || yeniAlarmDurumu();
+    esik = typeof esik === 'number' && esik >= 1 ? esik : ONAY_ESIGI;
+    var yeni = rapor && rapor.status;
+    if (!yeni) return { durum: durum, alarm: null };
+
+    // Zaten aktif olan durum: bekleyen varsa iptal (yanip sonme bitti)
+    if (yeni === durum.aktif) {
+      return { durum: { aktif: durum.aktif, bekleyen: null, sayac: 0 }, alarm: null };
+    }
+
+    // Farkli bir durum goruluyor: ayni mi sayiyoruz, yoksa yeni mi
+    var sayac = (durum.bekleyen === yeni) ? durum.sayac + 1 : 1;
+
+    if (sayac < esik) {
+      return { durum: { aktif: durum.aktif, bekleyen: yeni, sayac: sayac }, alarm: null };
+    }
+
+    // Onaylandi: durum degisti.
+    var bozuklar = (rapor.checks || [])
+      .filter(function (c) { return c.status !== 'healthy'; })
+      .map(function (c) { return c.name; });
+
+    // ILK durum healthy ise alarm URETILMEZ: her yeniden baslatmada
+    // "sistem saglikli acildi" satiri atmak gurultu olurdu. Ama bozuk
+    // acildiysa bilmek gerekir, o yuzden yalnizca healthy susturulur.
+    if (durum.aktif === null && yeni === 'healthy') {
+      return { durum: { aktif: yeni, bekleyen: null, sayac: 0 }, alarm: null };
+    }
+
+    return {
+      durum: { aktif: yeni, bekleyen: null, sayac: 0 },
+      alarm: {
+        ts: rapor.ts,
+        from: durum.aktif,          // ilk kez ise null
+        to: yeni,
+        // Kotuye mi gidiyoruz iyiye mi — bildirimde en cok bu lazim
+        direction: SIDDET[yeni] > SIDDET[durum.aktif || 'healthy'] ? 'worse' : 'better',
+        failing: bozuklar,
+        summary: (durum.aktif ? durum.aktif + ' → ' : '') + yeni
+               + (bozuklar.length ? ' (' + bozuklar.join(', ') + ')' : ''),
+      },
+    };
+  }
+
   return {
     degerlendir: degerlendir,
+    alarmKarari: alarmKarari,
+    yeniAlarmDurumu: yeniAlarmDurumu,
     yasMetni: yasMetni,
     TAZE_SN: TAZE_SN,
     BAYAT_SN: BAYAT_SN,
+    ONAY_ESIGI: ONAY_ESIGI,
   };
 }));

@@ -470,6 +470,40 @@ def _yuvarla(x, basamak=2):
     return None if x is None else round(x, basamak)
 
 
+def tahminleri_puanla(depo, ufuk_pencereleri=None):
+    """
+    Ufku dolmus tahminleri gerceklesen volatiliteyle karsilastirir.
+
+    Gerceklesen, tahminin yapildigi gunden hedef gune kadarki
+    getirilerden hesaplaniyor — yani tahminin ongormeye calistigi
+    donemin ta kendisi.
+    """
+    bekleyen = depo.puanlanacak_tahminler()
+    if not bekleyen:
+        return 0
+
+    # Ticker basina gunluk kapanislari bir kez oku
+    onbellek = {}
+    puanlanan = 0
+    for k in bekleyen:
+        t = k["ticker"]
+        if t not in onbellek:
+            onbellek[t] = depo.gunluk_kapanislar(t)
+        kapanislar = onbellek[t]
+
+        # Tahmin gunu ile hedef gun arasindaki kapanislari al
+        pencere = [c for g, c in kapanislar if k["made_on"] < g <= k["target_on"]]
+        if len(pencere) < 2:
+            continue                       # o donemde yeterli gozlem yok
+        getiriler = log_getiriler([(None, c) for c in pencere])
+        gercek = gerceklesmis_vol(getiriler)
+        if gercek is None:
+            continue
+        depo.tahmin_puanla(k["id"], gercek)
+        puanlanan += 1
+    return puanlanan
+
+
 def tumunu_hesapla(depo=None, min_getiri=None, surum_yaz=True):
     """
     Depodaki her ticker icin hesaplar, Node'un bekledigi sekli uretir ve
@@ -502,6 +536,16 @@ def tumunu_hesapla(depo=None, min_getiri=None, surum_yaz=True):
                         "egarch11", s["efit"], scope=t,
                         fit_quality=s["efit"]["loglik"],
                         meta={"returns": s["returns"], "days": s["days"]})
+
+            # Uretilen her tahmin hedef tarihiyle kaydediliyor; ufuk
+            # dolunca puanlanacak. Gun basina tek kayit (store tarafinda
+            # UNIQUE), yani 15 dakikada bir calismak kopya uretmiyor.
+            if surum_yaz:
+                for model_ad, hucreler in s["models"].items():
+                    for p in PENCERELER:
+                        v = hucreler.get(f"{p}D (%)")
+                        if v is not None:
+                            depo.tahmin_kaydet(t, model_ad, p, v)
         return {
             "source": "store",
             "data_mode": depo.data_mode,
@@ -532,6 +576,12 @@ def main():
         if a.ticker:
             print(json.dumps(ticker_hesapla(depo, a.ticker.upper(), a.min_returns), indent=2))
             return
+
+        # Once ufku dolmus tahminleri puanla, sonra yenilerini uret.
+        if not a.no_version:
+            n = tahminleri_puanla(depo)
+            if n:
+                print(f"[GARCH] {n} tahmin puanlandi")
 
         govde = tumunu_hesapla(depo, a.min_returns, surum_yaz=not a.no_version)
         if not govde["tickers"]:

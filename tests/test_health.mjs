@@ -172,3 +172,93 @@ test('bos girdiyle cokmez', () => {
   assert.ok(r.status);
   assert.ok(Array.isArray(r.checks));
 });
+
+// --- durum gecisi ve alarm karari ------------------------------------------
+
+const rapor = (s, bozuk = ['Spot feed']) => ({
+  status: s,
+  ts: '2026-10-06T12:00:00.000Z',
+  checks: [
+    { name: 'Spot feed', status: s === 'healthy' ? 'healthy' : 'degraded' },
+    { name: 'Store', status: 'healthy' },
+  ],
+});
+
+/** Durum dizisini isler, uretilen alarmlari doner. */
+function kos(dizi, esik = 2) {
+  let durum = H.yeniAlarmDurumu();
+  const alarmlar = [];
+  for (const s of dizi) {
+    const k = H.alarmKarari(durum, rapor(s), esik);
+    durum = k.durum;
+    if (k.alarm) alarmlar.push(k.alarm);
+  }
+  return { alarmlar, durum };
+}
+
+test('SAGLIKLI acilis alarm uretmez', () => {
+  // Her yeniden baslatmada "sistem saglikli acildi" satiri atmak
+  // gurultu olurdu ve gercek bir degisim arasinda kaybolurdu.
+  assert.equal(kos(['healthy', 'healthy', 'healthy']).alarmlar.length, 0);
+});
+
+test('BOZUK acilis alarm uretir', () => {
+  // Saglikli acilis susturulur ama bozuk acilisi bilmek gerekir.
+  const { alarmlar } = kos(['degraded', 'degraded']);
+  assert.equal(alarmlar.length, 1);
+  assert.equal(alarmlar[0].from, null);
+  assert.equal(alarmlar[0].to, 'degraded');
+});
+
+test('yalnizca DEGISIMDE alarm uretilir', () => {
+  // Ayni durumu her yoklamada bildirmek 30 saniyede bir ayni satiri
+  // yazmak olurdu.
+  const { alarmlar } = kos(['healthy', 'healthy', 'degraded', 'degraded',
+                            'degraded', 'degraded', 'degraded']);
+  assert.equal(alarmlar.length, 1, 'tekrar eden durum yeniden bildirilmemeli');
+});
+
+test('ANLIK sicrama onay esigine takilir', () => {
+  // Tek bir gec kalmis POST yuzunden alarm uretip bir sonraki saniye
+  // geri donmek alarmi degersizlestirir.
+  assert.equal(kos(['healthy', 'healthy', 'degraded', 'healthy', 'healthy']).alarmlar.length, 0);
+});
+
+test('dusus ve toparlanma iki ayri alarm verir', () => {
+  const { alarmlar } = kos(['healthy', 'healthy', 'degraded', 'degraded',
+                            'healthy', 'healthy']);
+  assert.equal(alarmlar.length, 2);
+  assert.equal(alarmlar[0].direction, 'worse');
+  assert.equal(alarmlar[1].direction, 'better');
+});
+
+test('yon dogru hesaplanir', () => {
+  const { alarmlar } = kos(['healthy', 'healthy', 'unhealthy', 'unhealthy',
+                            'degraded', 'degraded']);
+  assert.equal(alarmlar[0].direction, 'worse', 'healthy -> unhealthy kotuye gidis');
+  assert.equal(alarmlar[1].direction, 'better', 'unhealthy -> degraded iyiye gidis');
+});
+
+test('alarm bozuk kontrollerin adini tasir', () => {
+  const { alarmlar } = kos(['healthy', 'healthy', 'degraded', 'degraded']);
+  assert.deepEqual(alarmlar[0].failing, ['Spot feed']);
+  assert.match(alarmlar[0].summary, /Spot feed/);
+});
+
+test('onay esigi ayarlanabilir', () => {
+  // esik=1 ile anlik sicrama da alarm uretir
+  assert.equal(kos(['healthy', 'degraded', 'healthy'], 1).alarmlar.length, 2);
+});
+
+test('durum nesnesi cagiran tarafindan tasinir ve degismezdir', () => {
+  const d0 = H.yeniAlarmDurumu();
+  const k = H.alarmKarari(d0, rapor('degraded'), 2);
+  assert.equal(d0.aktif, null, 'girdi durumu degistirilmemeli');
+  assert.notEqual(k.durum, d0);
+});
+
+test('durum ya da rapor eksikse cokmez', () => {
+  assert.doesNotThrow(() => H.alarmKarari(null, rapor('healthy'), 2));
+  assert.equal(H.alarmKarari(H.yeniAlarmDurumu(), null, 2).alarm, null);
+  assert.equal(H.alarmKarari(H.yeniAlarmDurumu(), {}, 2).alarm, null);
+});
