@@ -15,3 +15,4 @@ __pycache__/
 
 # Isletim sistemi
 .DS_Store
+audit-log.jsonl

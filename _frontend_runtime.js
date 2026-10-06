@@ -2,6 +2,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { DenetimIzi } = require('./audit.js');
 
 // .env dosyasini ortama yukler (mevcut degerleri ezmez).
 // Kimlik bilgileri kodda gomulu tutulmaz.
@@ -90,6 +91,10 @@ const optionColumnDefs = [
 // ---------------------------------------------------------------------------
 const DATA_MODE = process.env.DATA_MODE !== undefined ? Number(process.env.DATA_MODE) : 0;
 const MOCK_MODE = DATA_MODE === 0;
+
+// Degistirilemez denetim izi: fiyatlama ve risk koşuları zincirlenmiş
+// kayıtlara yazılır, geçmişe müdahale doğrulamada yakalanır.
+const denetimIzi = new DenetimIzi(path.join(__dirname, 'audit-log.jsonl'));
 
 const serverState = {
   spotByTicker: {},
@@ -2883,7 +2888,28 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
           }
         })
         .catch(function () { /* canli mod ya da uc kapali: sessiz gec */ });
+
+      denetimDurumGoster();
     }
+
+    // Denetim izinin kayit sayisini ve butunluk durumunu gosterir.
+    function denetimDurumGoster() {
+      var el = document.getElementById('denetimDurum');
+      if (!el) return;
+      fetch('/api/audit/verify')
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d && d.gecerli) {
+            el.textContent = d.kayitSayisi + ' kayıt · zincir bütün';
+            el.style.color = '#16a34a';
+          } else {
+            el.textContent = (d && d.hata) ? ('BOZUK — ' + d.hata) : 'doğrulanamadı';
+            el.style.color = '#dc2626';
+          }
+        })
+        .catch(function () { el.textContent = 'erişilemedi'; el.style.color = '#dc2626'; });
+    }
+    window.denetimDogrula = denetimDurumGoster;
 
     const FAIR_RATE_STORAGE_KEY = 'futuresFairRateByCode';
     const fairRateInputs = Array.from(document.querySelectorAll('.maturity-fair-input'));
@@ -3295,6 +3321,11 @@ function toolsContent(toolsTab) {
             <button class="action-btn" type="button" onclick="riskRunMC()" style="align-self:flex-end;">Run VaR Simulation</button>
             <button class="action-btn" type="button" onclick="riskRunStres()" style="align-self:flex-end;">Stres Testi</button>
             <button class="action-btn" type="button" onclick="riskRaporIndir()" style="align-self:flex-end;">Rapor İndir (CSV)</button>
+          </div>
+          <div style="margin-top:14px;border-top:1px solid #e2e8f0;padding-top:10px;display:flex;gap:12px;align-items:center;font-size:12px;">
+            <span style="font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">Denetim İzi</span>
+            <span id="denetimDurum" style="color:#64748b;">yükleniyor…</span>
+            <button class="action-btn" type="button" onclick="denetimDogrula()" style="padding:3px 10px;font-size:11px;">Bütünlüğü Doğrula</button>
           </div>
           <div id="riskStresWrap" style="display:none;margin-top:14px;">
             <div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Stres Testi — Senaryo Analizi</div>
@@ -4218,6 +4249,17 @@ const server = http.createServer(async (req, res) => {
       '  });',
       '};',
       '',
+      '// Denetim izine kayit dusurur. Basarisizligi akisi bozmamali: izin',
+      '// tutulamamasi risk hesabini durdurmaz, ama sessizce de gecmez.',
+      'window._denetimYaz = function(tip, veri) {',
+      '  return fetch("/api/audit", {',
+      '    method: "POST",',
+      '    headers: { "Content-Type": "application/json" },',
+      '    body: JSON.stringify({ tip: tip, veri: veri })',
+      '  }).then(function(r){ return r.json(); })',
+      '    .catch(function(e){ console.warn("denetim izine yazilamadi:", e); return null; });',
+      '};',
+      '',
       '// --- Risk raporu ----------------------------------------------------',
       '// CSV secildi: XLSX kutuphanesi node_modules a bagli ve taze bir',
       '// klonda bulunmayabiliyor; rapor uretimi bagimliliga takilmamali.',
@@ -4304,6 +4346,9 @@ const server = http.createServer(async (req, res) => {
       '    stres: window._sonStresSonucu || null',
       '  };',
       '',
+      '  window._denetimYaz("rapor_indirildi", {',
+      '    pozisyon: portfoy.length, modMock: veri.mockMu',
+      '  });',
       '  var csv = "\ufeff" + window._riskRaporCsv(veri);   // BOM: Excel UTF-8 icin',
       '  var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });',
       '  var a = document.createElement("a");',
@@ -4333,6 +4378,10 @@ const server = http.createServer(async (req, res) => {
       '        volMap:volMap, rateMap:rateMap',
       '      });',
       '      window._sonStresSonucu = sonuc;   // rapor bu sonucu kullanir',
+      '      window._denetimYaz("stres_testi", {',
+      '        senaryo: sonuc.length, pozisyon: portfolio.length, rho: rho,',
+      '        enKotuVar: Math.min.apply(null, sonuc.map(function(r){ return r.var; }))',
+      '      });',
       '      var tb=document.getElementById("riskStresBody");',
       '      if (tb) {',
       '        tb.innerHTML="";',
@@ -4400,6 +4449,10 @@ const server = http.createServer(async (req, res) => {
       '          rateMap:rateMap, volMap:volMap',
       '        });',
       '        var pnls=sim.pnls, stMap=sim.stMap, curVal=sim.curVal;',
+      '        window._denetimYaz("var_kosusu", {',
+      '          pozisyon: portfolio.length, nSims: nSims, conf: conf,',
+      '          hold: hold, rho: rho, volWin: volWin, portfoyDegeri: curVal',
+      '        });',
       '        pnls.sort(function(a,b){return a-b;});',
       '        var varIdx=Math.floor((1-conf)*nSims);',
       '        var varVal=pnls[varIdx];',
@@ -4751,6 +4804,48 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ ok: true, positions: pozisyonlar }));
+    return;
+  }
+
+  if (url.pathname === '/api/audit' && req.method === 'GET') {
+    const n = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      ok: true,
+      toplam: denetimIzi.kayitlar.length,
+      dogrulama: denetimIzi.dogrula(),
+      kayitlar: denetimIzi.son(n),
+    }));
+    return;
+  }
+
+  if (url.pathname === '/api/audit/verify' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: true, ...denetimIzi.dogrula() }));
+    return;
+  }
+
+  if (url.pathname === '/api/audit' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; if (body.length > 200_000) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const p = JSON.parse(body || '{}');
+        if (!p.tip) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: 'tip alani zorunlu' }));
+          return;
+        }
+        // Veri modu kayda gömülür: üretilmiş veriyle yapılan bir koşunun
+        // sonradan canlı sanılmaması için.
+        const kayit = denetimIzi.ekle(p.tip, { ...(p.veri || {}), mod: MOCK_MODE ? 'MOCK' : 'CANLI' });
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, seq: kayit.seq, ozet: kayit.ozet }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: 'gecersiz json' }));
+      }
+    });
     return;
   }
 

@@ -116,6 +116,26 @@ belirgin bir sapma model ya da parametre tarafında sorun olduğuna işaret
 eder. Amerikan ile Avrupa arasındaki fark erken kullanım hakkının değeridir
 (temettüsüz call'da sıfır, faiz yüksekken derin ITM put'ta belirgin).
 
+## Denetim izi
+
+Fiyatlama ve risk koşuları zincirlenmiş bir kayda yazılır (`audit-log.jsonl`):
+her kayıt bir öncekinin SHA-256 özetini taşır. Geçmişteki bir kaydı
+değiştirmek ondan sonraki tüm özetleri bozar ve doğrulamada yakalanır.
+
+| Uç | Ne yapar |
+|---|---|
+| `GET /api/audit` | Son kayıtlar + bütünlük durumu |
+| `GET /api/audit/verify` | Yalnızca doğrulama sonucu |
+| `POST /api/audit` | Yeni kayıt ekler |
+
+Risk sekmesindeki **Denetim İzi** satırı kayıt sayısını ve zincirin bütün
+olup olmadığını gösterir. Her kayda veri modu (MOCK / CANLI) gömülür —
+üretilmiş veriyle yapılmış bir koşunun sonradan canlı sanılmaması için.
+
+Bunun engellediği, kayıtların **fark edilmeden değiştirilmesidir**;
+silinmelerini engellemez. Gerçek bir blok zinciri değil, append-only hash
+zinciridir.
+
 ## Risk raporu
 
 Risk sekmesindeki **Rapor İndir (CSV)** butonu portföyü, VaR sonuçlarını ve
