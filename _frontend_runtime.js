@@ -3103,13 +3103,46 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         hataEl.style.display = m ? '' : 'none';
       };
 
+      // Enstruman listesi TEK SEFERLIK yuklenmiyor.
+      //
+      // Sunucu yeni kalktiginda opsiyon zinciri henuz bos oluyor (ilk
+      // POST birkac saniye sonra geliyor) ve canli modda seans disinda
+      // hic gelmeyebiliyor. Tek bir fetch ile birakmak, o pencerede
+      // sayfayi acan kullaniciya KALICI BOS bir menu birakiyordu —
+      // "underlying secemiyorum" tam olarak bu.
+      //
+      // Cozum: zincir gelene kadar yoklamaya devam et, ve bos durumu
+      // alanin KENDISINDE goster (kucuk bir hata satiri gozden kaciyor).
+      let tickerYoklama = null;
       function tickerlariYukle() {
         fetch('/api/options-chain?all=1').then((r) => r.json()).then((d) => {
           const hepsi = Object.keys(d.options_by_ticker || {}).sort();
+          if (!hepsi.length) {
+            tickerEl.innerHTML = '<option value="">waiting for data…</option>';
+            tickerEl.disabled = true;
+            document.getElementById('qPriceBtn').disabled = true;
+            hata('No option chains received yet. The data source may still be starting, '
+               + 'or the market may be closed. This will fill in automatically.');
+            if (!tickerYoklama) tickerYoklama = setInterval(tickerlariYukle, 3000);
+            return;
+          }
+          if (tickerYoklama) { clearInterval(tickerYoklama); tickerYoklama = null; }
+          // Mevcut secim korunur: arka plandaki bir yenileme
+          // kullanicinin sectigi ticker'i degistirmemeli.
+          const onceki = tickerEl.value;
+          tickerEl.disabled = false;
+          document.getElementById('qPriceBtn').disabled = false;
           tickerEl.innerHTML = hepsi.map((t) => '<option>' + t + '</option>').join('');
-          if (hepsi.length) zinciriYukle();
-          else hata('No option chains yet — keep the data source running.');
-        }).catch(() => hata('Could not load instruments.'));
+          if (onceki && hepsi.indexOf(onceki) !== -1) {
+            tickerEl.value = onceki;
+            return;              // secim degismediyse zinciri yeniden cekme
+          }
+          hata('');
+          zinciriYukle();
+        }).catch(() => {
+          hata('Could not reach the server — retrying.');
+          if (!tickerYoklama) tickerYoklama = setInterval(tickerlariYukle, 3000);
+        });
       }
 
       function zinciriYukle() {
