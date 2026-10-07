@@ -81,6 +81,9 @@ IdealData REST ─────────────────────�
 | `bench_stream.py` | Veri boru hattı kapasite ölçümü |
 | `garch.py` | Depodaki geçmişten gerçekleşmiş volatilite ve GARCH(1,1) |
 | `yield_curve.py` / `fit_curve.py` | Nelson-Siegel-Svensson eğri uydurma |
+| `feed_schema.py` | Ortak veri şeması ve kaynak adaptörleri (IdealData/FIX/CSV/XML/JSON) |
+| `import_history.py` | Tarihsel günlük fiyat aktarımı (CSV/JSON → `spot_daily`) |
+| `k8s/` | Kubernetes manifestleri — bkz. [k8s/README.md](k8s/README.md) |
 
 ### Akış protokolü
 
@@ -96,6 +99,46 @@ tutulur:
 
 Sembol biçimleri: spot `THYAO`, vadeli `F_THYAO1026`, opsiyon
 `O_KCHOLE1026C210.00` (dayanak, vade, C/P, kullanım fiyatı).
+
+### Ortak veri şeması ve kaynak adaptörleri
+
+Yukarıdaki biçim **tek bir kaynağa** ait. İkinci bir kaynak eklemek, akış
+döngüsünü baştan yazmak demekti: her kaynağın alan adları, fiyat ölçeği ve
+sembol dilbilgisi farklı. `feed_schema.py` araya kanonik bir kayıt biçimi
+koyar; hattın geri kalanı yalnızca onu bilir.
+
+```
+spot    {source, ticker, ts, bid, ask, mid, bid_size, ask_size, flags}
+option  {source, ticker, ts, expiry, strike, opt_type, bid, ask, mid, flags}
+futures {source, ticker, ts, code, fut_mid, spot_mid, dtm, flags}
+```
+
+Beş adaptör var: IdealData (yukarıdaki etiketler), FIX 4.x, CSV, XML ve alan
+haritasıyla yapılandırılabilen jenerik JSON. **Aynı kotasyonun dört biçimde
+aynı kanonik kayda çıktığı testle sabitlendi** — çıkmasaydı modülün varlık
+sebebi olmazdı.
+
+```bash
+python3 feed_schema.py --self-test
+```
+
+- **`source` her kayıtta.** Devretme anında hangi fiyatın hangi kaynaktan
+  geldiği bilinmeden yedek kaynağa geçilemez.
+- **`mid` türetme tek yerde:** iki taraflı ortası, tek taraflı `one-sided`,
+  defter yoksa son işlem `no-book`. **Çapraz defter (`bid > ask`) atılmaz,
+  işaretlenir** — gerçek piyasada anında olur ve atmak o anda fiyatı tamamen
+  kaybetmek olurdu.
+- **Reddedilen kayıt sayılır.** Sessiz düşme, boru hattının boşluğunu kaynağın
+  boşluğundan ayırt edilemez kılardı. `Hat.rapor()` her red sebebini ayrı tutar.
+- Bir adaptör patlarsa hat durmaz; bir kaynağın bozuk yükü diğerlerini kesmemeli.
+
+`KaynakSecici` öncelik, bayatlıkta devretme ve birincil döndüğünde otomatik geri
+dönüş yapar. **Bu yedek kaynağın kendisi değildir** — ikinci bir gerçek kaynağın
+sözleşmesi (uç nokta, kimlik doğrulama, sembol listesi) hâlâ dışarıda. Burada
+olan yalnızca karar mantığı, sözleşme geldiğinde bağlanacak yer.
+
+`bridge_stream.py`'nin sıcak döngüsü bu sürümde **değiştirilmedi**: canlı akışın
+yolu ve testleri ona bağlı, birleştirme ayrı bir iş.
 
 ## Geliştirme
 
@@ -153,6 +196,58 @@ Model sürümleme olmadan "bu opsiyon hangi eğriyle fiyatlandı" sorusu
 cevaplanamaz; bu yüzden uydurmalar güncellenmez, biriktirilir. Durum ve sürüm
 listesi Discount Rate sekmesindeki **Persistence & Model Versions** panelinde
 görünür.
+
+### Kalıcı durum dizini (`STATE_DIR`)
+
+Veritabanı dışındaki durum dosyaları da diske yazılır: denetim izi, uyarı
+geçmişi, son iyi kalibrasyonlar, teklifler, fiyatlama kaydı, temettüler.
+Varsayılan olarak kodun yanına yazılırlar. **Konteynerde bu `/app`'tir ve
+katman dosya sistemidir** — kapsayıcı silindiğinde hepsi gider. Denetim izinin
+hash zinciriyle değiştirilemez olması, dosyanın kendisi kaybolabiliyorken bir
+şey ifade etmiyordu.
+
+`STATE_DIR` bir birime işaret ettiğinde yedisi de orada durur:
+
+```bash
+docker run -v derivex-data:/data \
+  -e STATE_DIR=/data -e STORE_DB=/data/derivex.db ... derivex-dashboard
+```
+
+Kubernetes'te bunu ConfigMap yapar ([k8s/README.md](k8s/README.md)).
+`dividends.json` hem repoda gelen bir tohum hem düzenlenebilir durum olduğu
+için okuma önce `STATE_DIR`'e, sonra tohuma bakar.
+
+### Tarihsel veri aktarımı
+
+Depo yalnızca **ileriye** birikir: ilk çalıştırıldığı günden bugüne. Yani 10
+yıllık seri kendiliğinden hiç oluşmaz ve GARCH 60 getirinin altında uydurmayı
+reddettiği için modeller bekler. `import_history.py` dışarıdan gelen veriyi
+yükler:
+
+```bash
+python3 import_history.py gecmis.csv --data-mode LIVE --dry-run
+python3 import_history.py gecmis.csv --data-mode LIVE --report-gaps
+```
+
+Başlık adları esnek eşlenir (`tarih`/`date`, `kapanis`/`close`, …); eşleşmezse
+`--map "Fiyat=close"` ile elle verilir. Dört karar:
+
+- **`--data-mode` zorunlu, varsayılanı yok.** Deponun tüm tasarımı üretilmiş
+  fiyatların piyasa fiyatı gibi görünmemesine dayanıyor; aktarımda bu etiketi
+  tahmin etmek o korumayı tek hamlede boşa çıkarırdı.
+- **Gün/ay sırası tahmin edilmiyor.** `03/04/2016` hem 3 Nisan hem 4 Mart.
+  Dosyadan çıkarılabiliyorsa çıkarılır (bir satırda bileşen > 12), aksi halde
+  aktarım durur ve `--date-format` ister. Ters çevrilmiş bir seri **hiçbir hata
+  vermez**: tarihler geçerli, fiyatlar geçerli, yalnızca her getiri yanlıştır.
+- **Tutarsız bar reddedilir, düzeltilmez.** `high < low` bozuk veridir.
+- **Bugünün barı atlanır** (`--allow-today` ile alınır) ve çakışan
+  ticker/gün satırlarının **hepsi** düşer — "son satır kazanır" demek dosyadaki
+  sıraya güvenmek olurdu.
+
+Aktarılan barlar `n = 0` ile işaretlenir, böylece hangi barın ölçüldüğü
+hangisinin aktarıldığı ayırt edilebilir; gün içi tick'ten oluşmuş bir bar
+(`n > 0`) varsayılan olarak **ezilmez** (`--overwrite`). Yeniden çalıştırmak
+güvenlidir. Rapor, hangi ticker'ın GARCH eşiğini geçtiğini yazar.
 
 ### GARCH(1,1)
 
@@ -352,6 +447,38 @@ açılır, aksi halde dışarıdan erişilemez.
 
 Canlı modda konteynerin dışa açık IP'sinin IdealData'da tanımlı olması gerekir.
 
+Durum dosyaları varsayılan olarak imajın içine yazılır ve konteyner silinince
+gider. Kalıcılık için bir birim bağlayın (bkz. **Kalıcı durum dizini**).
+
+## Kubernetes
+
+Manifestler `k8s/` altında: Namespace, PVC, ConfigMap, Secret örneği,
+Deployment, Service ve Ingress örneği. Ayrıntılı kurulum ve kısıtlar
+[k8s/README.md](k8s/README.md)'de.
+
+**Otomatik ölçekleme yok ve bu gizlenmedi.** Kalıcılık SQLite dosyası üzerinde
+ve birim `ReadWriteOnce`. İkinci replika performans değil **veri bütünlüğü**
+sorunu yaratır: aynı akış iki kez okunur, aynı satırlar iki kez yazılır,
+`forecast_log` tekilliği için iki pod yarışır, SQLite yazar kilidi ağ dosya
+sistemlerinde güvenilmez. HPA kasten eklenmedi — çalışmayan bir ölçekleyici
+koymak ölçeklendiği izlenimi verip ilk gerçek yükte veriyi bozardı.
+
+Dolayısıyla `replicas: 1` ve `strategy: Recreate` (`RollingUpdate` güncelleme
+sırasında iki podu kısa süre birlikte ayakta tutar — tam kaçınılan durum).
+Yatay ölçekleme PostgreSQL'e geçiş ve köprünün tek yazara indirilmesi demek;
+bu bir YAML işi değil.
+
+**Problar `/health`'e bakar ve `?strict=1` kullanmaz.** `readinessProbe`
+başarısız olunca pod Service'ten çıkar ve tek replika olduğu için pano tamamen
+erişilemez olur — oysa veri akmadığını teşhis etmek için tam da panoya bakmak
+gerekir. Veri akışı uyarıları webhook ile gider. `?strict=1` (unhealthy → 503)
+JSON okuyamayan harici izleme ve yük dengeleyici havuz kontrolü için vardır.
+
+Manifestler gerçek bir kümede **denenmedi**; `tests/test_k8s_manifests.py`
+yalnızca kendi içlerinde tutarlı olduklarını (çapraz referanslar, `STATE_DIR`
+ile birim yolunun eşleşmesi, `replicas=1`, örnek Secret'ın boşluğu) garanti
+eder. Yedi bilinen eksik `k8s/README.md`'de listelidir.
+
 ## CI
 
 `.github/workflows/ci.yml` her push ve pull request'te iki iş çalıştırır:
@@ -364,12 +491,15 @@ ayağa kalkması.
 npm test
 ```
 
-39 test: Python tarafı fiyatlama ve akış ayrıştırmayı (`tests/test_bridge.py`),
-Node tarafı Monte Carlo VaR çekirdeğini (`tests/test_risk.mjs`) kapsar. Ek
-bağımlılık yok — `unittest` ve `node --test` kullanılır.
+**376 Python + 197 Node testi.** Ek çalışma zamanı bağımlılığı yok —
+`unittest` ve `node --test` kullanılır. (`pyyaml` yalnızca CI'da, yalnızca
+Kubernetes manifest testleri için kurulur; o test `pyyaml` yoksa atlanır.)
 
 JS testleri sunucuyu ayağa kaldırıp `/risk-handler.js`'i gerçekten servis
-edildiği haliyle çeker; yani tarayıcıya giden kodun kendisi sınanır.
+edildiği haliyle çeker; yani tarayıcıya giden kodun kendisi sınanır. Birçok
+test bir **kararı** sabitler, biçimi değil: şubenin kendi teklifini
+onaylayamaması, aktarımın mock/live'ı karıştırmaması, `replicas` değerinin 1
+kalması gibi. Bu testler bozulursa, düzeltilecek şey genellikle test değildir.
 
 ## Risk: korelasyon varsayımı
 
