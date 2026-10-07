@@ -41,7 +41,7 @@ jobs:
           node --check ws.js
           python3 -m py_compile bridge_stream.py bridge_http.py mock_feed.py start.py \
                                idealdata_probe.py store.py garch.py yield_curve.py fit_curve.py \
-                               bench_stream.py backtest.py correlation.py
+                               bench_stream.py backtest.py correlation.py feed_schema.py
 
   docker:
     runs-on: ubuntu-latest
