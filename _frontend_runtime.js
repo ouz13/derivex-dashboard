@@ -151,6 +151,10 @@ const serverState = {
   // Akisin kendi ts'i yalnizca saat:dakika:saniye tasidigi icin yas
   // hesabina elverisli degil; saglik kontrolu bunu kullanir.
   lastPostAt: { spot: null, futures: null, options: null, other: null },
+  // Varliklar arasi korelasyon matrisi ve Cholesky carpani.
+  // correlation.py hesaplar; risk simulasyonu bunu kullanir, yoksa
+  // skaler rho'ya duser.
+  correlation: null,
   // Saglik durumu gecisleri. Degerlendirme tek basina kimseye haber
   // vermiyor; burada gecisler tutulup bildirilir.
   healthAlerts: [],
@@ -3540,7 +3544,79 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         .catch(function () { /* canli mod ya da uc kapali: sessiz gec */ });
 
       denetimDurumGoster();
+      korelasyonYukle();
     }
+
+    // Korelasyon matrisini yukler ve isi haritasi olarak cizer.
+    // Matris yoksa risk simulasyonu skaler rho'ya duser; panel bunu
+    // gizlemek yerine ne yapilmasi gerektigini yazar.
+    function korelasyonYukle(zorla) {
+      var durum = document.getElementById('korDurum');
+      var isi = document.getElementById('korIsi');
+      if (!durum) return;
+      fetch('/api/correlation').then(function (r) { return r.json(); }).then(function (d) {
+        var c = d && d.correlation;
+        window.__korelasyonMatrisi = c || null;
+        if (!c) {
+          durum.textContent = 'not available — run: python3 correlation.py '
+            + '(VaR will use the single rho below)';
+          durum.style.color = '#b45309';
+          if (isi) isi.innerHTML = '';
+          return;
+        }
+        durum.innerHTML = '<b>' + c.tickers.length + ' assets</b> · '
+          + c.observations + ' common observations · shrinkage λ='
+          + c.shrinkage + ' · average correlation ' + c.raw_avg_correlation
+          + ' → ' + c.avg_correlation
+          + ' · ' + String(c.ts || '').slice(11, 19);
+        durum.style.color = '#64748b';
+
+        if (!isi) return;
+        var t = c.tickers, M = c.matrix;
+        // Korelasyon -1..1; renk mavi (negatif) - beyaz (0) - kirmizi (pozitif)
+        function renk(v) {
+          if (v >= 0) {
+            var a = Math.min(1, v);
+            return 'rgb(' + Math.round(255 - 60 * a) + ','
+                 + Math.round(255 - 150 * a) + ',' + Math.round(255 - 150 * a) + ')';
+          }
+          var b = Math.min(1, -v);
+          return 'rgb(' + Math.round(255 - 150 * b) + ','
+               + Math.round(255 - 150 * b) + ',' + Math.round(255 - 60 * b) + ')';
+        }
+        // width:auto gerekiyor: global "table { width: 100% }" kurali
+        // isi haritasini da geriyor ve etiketlerle hucreler arasinda
+        // kocaman bir bosluk birakiyordu.
+        var h = '<table style="border-collapse:collapse;font-size:9px;width:auto;">'
+              + '<thead><tr><th style="padding:2px 4px;width:1px;"></th>';
+        t.forEach(function (x) {
+          h += '<th style="padding:2px 3px;font-weight:600;color:#475569;'
+             + 'writing-mode:vertical-rl;transform:rotate(180deg);'
+             + 'font-size:9px;white-space:nowrap;">' + x + '</th>';
+        });
+        h += '</tr></thead><tbody>';
+        t.forEach(function (satirAd, i) {
+          h += '<tr><td style="padding:2px 5px;font-weight:600;color:#475569;'
+             + 'white-space:nowrap;width:1px;">' + satirAd + '</td>';
+          M[i].forEach(function (v, j) {
+            h += '<td title="' + satirAd + ' / ' + t[j] + ': ' + v.toFixed(3) + '"'
+               + ' style="padding:0;width:15px;height:15px;background:' + renk(v)
+               + ';border:0.5px solid #f1f5f9;"></td>';
+          });
+          h += '</tr>';
+        });
+        h += '</tbody></table>'
+           + '<div style="font-size:10px;color:#94a3b8;margin-top:5px;">'
+           + 'Hover a cell for the value. Red = positive, blue = negative, '
+           + 'white = uncorrelated. Shrinkage pulls pairs toward the average; '
+           + 'without it the sample matrix is too noisy to decompose.</div>';
+        isi.innerHTML = h;
+      }).catch(function () {
+        durum.textContent = 'unreachable';
+        window.__korelasyonMatrisi = null;
+      });
+    }
+    window.korelasyonYukle = korelasyonYukle;
 
     // Denetim izinin kayit sayisini ve butunluk durumunu gosterir.
     function denetimDurumGoster() {
@@ -4014,6 +4090,14 @@ function toolsContent(toolsTab) {
             <button class="action-btn" type="button" onclick="riskRunMC()" style="align-self:flex-end;">Run VaR Simulation</button>
             <button class="action-btn" type="button" onclick="riskRunStres()" style="align-self:flex-end;">Stress Test</button>
             <button class="action-btn" type="button" onclick="riskRaporIndir()" style="align-self:flex-end;">Download Report (CSV)</button>
+          </div>
+          <div id="korPanel" style="margin-top:16px;border-top:1px solid #e2e8f0;padding-top:12px;">
+            <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;">
+              <span style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">Correlation Matrix</span>
+              <button class="action-btn" type="button" onclick="korelasyonYukle(true)" style="padding:2px 9px;font-size:11px;">Refresh</button>
+            </div>
+            <div id="korDurum" style="font-size:12px;color:#64748b;">loading…</div>
+            <div id="korIsi" style="margin-top:8px;overflow-x:auto;"></div>
           </div>
           <div style="margin-top:14px;border-top:1px solid #e2e8f0;padding-top:10px;display:flex;gap:12px;align-items:center;font-size:12px;">
             <span style="font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">Audit Trail</span>
@@ -4997,15 +5081,49 @@ const server = http.createServer(async (req, res) => {
       '    }',
       '  }',
       '',
-      '  // Tek faktorlu korelasyon:  z_i = sqrt(rho)*z_piyasa + sqrt(1-rho)*z_ozgu',
+      '  // KORELASYON: matris varsa onu kullan, yoksa skaler rho.',
+      '  //',
+      '  // Matris yolunda z = L*e (L: Cholesky carpani, e: bagimsiz',
+      '  // standart normaller). Bu, ciftler arasi GERCEK korelasyonu',
+      '  // tasir; skaler rho ise THYAO-GARAN ile THYAO-HEKTS',
+      '  // korelasyonunu ayni kabul ederdi.',
+      '  //',
+      '  // Matris portfoydeki dayanaklarin TAMAMINI kapsamiyorsa skaler',
+      '  // yola dusuluyor: eksik varliklari bagimsiz saymak, onlarin',
+      '  // riskini oldugundan dusuk gosterirdi.',
+      '  var korM = opts.korelasyon || null;',
+      '  var L = null, idx = null, eksik = [];',
+      '  if (korM && korM.cholesky && korM.tickers) {',
+      '    idx = [];',
+      '    for (var d=0; d<dayanaklar.length; d++) {',
+      '      var k = korM.tickers.indexOf(dayanaklar[d].tk);',
+      '      if (k === -1) eksik.push(dayanaklar[d].tk); else idx.push(k);',
+      '    }',
+      '    if (!eksik.length) L = korM.cholesky; else idx = null;',
+      '  }',
+      '  var korKaynak = L ? "matrix" : "scalar";',
+      '',
       '  var wMkt=Math.sqrt(rho), wIdio=Math.sqrt(1-rho);',
       '  var pnls=new Array(nSims), stMap={}, senaryoST={};',
+      '  var eps = L ? new Array(L.length) : null;',
+      '  var zVec = L ? new Array(L.length) : null;',
       '  for (var s=0;s<nSims;s++) {',
       '    var portPnl=0;',
       '    var zMkt=rnd();',
+      '    if (L) {',
+      '      // Yalnizca gereken satirlar hesaplanabilir ama L alt ucgen',
+      '      // oldugu icin i. satir 0..i araligindaki e degerlerine',
+      '      // bagli; tamamini uretmek hem dogru hem basit.',
+      '      for (var q=0;q<L.length;q++) eps[q]=rnd();',
+      '      for (var q=0;q<L.length;q++) {',
+      '        var acc=0; var Lq=L[q];',
+      '        for (var w=0;w<=q;w++) acc+=Lq[w]*eps[w];',
+      '        zVec[q]=acc;',
+      '      }',
+      '    }',
       '    for (var d=0;d<dayanaklar.length;d++) {',
       '      var dv=dayanaklar[d];',
-      '      var z=wMkt*zMkt+wIdio*rnd();',
+      '      var z = L ? zVec[idx[d]] : (wMkt*zMkt+wIdio*rnd());',
       '      var STd=dv.spot*Math.exp((dv.r-0.5*dv.sigma*dv.sigma)*dt+dv.sigma*Math.sqrt(dt)*z);',
       '      senaryoST[dv.tk]=STd;',
       '      if (!stMap[dv.tk]) stMap[dv.tk]={spot:dv.spot,r:dv.r,sigma:dv.sigma,minST:STd,maxST:STd};',
@@ -5023,7 +5141,7 @@ const server = http.createServer(async (req, res) => {
       '    }',
       '    pnls[s]=portPnl;',
       '  }',
-      '  return { pnls: pnls, stMap: stMap, curVal: curVal };',
+      '  return { pnls: pnls, stMap: stMap, curVal: curVal, korKaynak: korKaynak, korEksik: eksik };',
       '};',
       '',
       '// --- Stres testi / senaryo analizi ---------------------------------',
@@ -5310,7 +5428,8 @@ const server = http.createServer(async (req, res) => {
       '        var t0=(window.performance&&performance.now)?performance.now():Date.now();',
       '        var sim=window._riskSimulate(portfolio,{',
       '          nSims:nSims, dt:dt, mult:mult, rho:rho,',
-      '          rateMap:rateMap, volMap:volMap',
+      '          rateMap:rateMap, volMap:volMap,',
+      '          korelasyon: window.__korelasyonMatrisi || null',
       '        });',
       '        var simMs=Math.round(((window.performance&&performance.now)?performance.now():Date.now())-t0);',
       '        var pnls=sim.pnls, stMap=sim.stMap, curVal=sim.curVal;',
@@ -5349,7 +5468,21 @@ const server = http.createServer(async (req, res) => {
       '            \'Paths with a loss: <b style="color:#ef4444;">\'+lossPct+\'%</b> of \'+nSims.toLocaleString()+\' simulations.\'+',
       '            \'</div>\';',
       '        }',
-      '        if(statusEl) statusEl.textContent="Done in "+simMs+" ms. "+nSims.toLocaleString()+" paths | Conf: "+(conf*100).toFixed(0)+"% | Hold: "+hold+"d | Vol window: "+volWin;',
+      '        // Hangi korelasyon yolunun kullanildigi ACIKCA yazilir:',
+      '        // skaler rho ile matris arasindaki fark VaR icin buyuk ve',
+      '        // kullanici hangisine baktigini bilmeli.',
+      '        var korNot;',
+      '        if (sim.korKaynak === "matrix") {',
+      '          korNot = "correlation matrix (" + window.__korelasyonMatrisi.tickers.length + " assets)";',
+      '        } else if (sim.korEksik && sim.korEksik.length) {',
+      '          // Neden skalere dusuldugu soylenmeli: kullanici matrisin',
+      '          // hangi varligi kapsamadigini bilmeden duzeltemez.',
+      '          korNot = "single rho=" + rho.toFixed(2)',
+      '                 + " (matrix missing: " + sim.korEksik.join(", ") + ")";',
+      '        } else {',
+      '          korNot = "single rho=" + rho.toFixed(2);',
+      '        }',
+      '        if(statusEl) statusEl.textContent="Done in "+simMs+" ms. "+nSims.toLocaleString()+" paths | Conf: "+(conf*100).toFixed(0)+"% | Hold: "+hold+"d | Vol window: "+volWin+" | "+korNot;',
       '        var debugEl=document.getElementById("riskMcDebugTable");',
       '        if(debugEl){',
       '          var tks=Object.keys(stMap);',
@@ -5780,6 +5913,52 @@ const server = http.createServer(async (req, res) => {
         serverState.yieldCurve = { ...p, ts: new Date().toISOString() };
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: true, points: (p.curve || []).length }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
+      }
+    });
+    return;
+  }
+
+  // Varliklar arasi korelasyon matrisi. correlation.py hesaplayip
+  // gonderir; risk simulasyonu Cholesky carpanini buradan okur.
+  if (url.pathname === '/api/correlation' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: true, correlation: serverState.correlation }));
+    return;
+  }
+
+  if (url.pathname === '/api/correlation' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; if (body.length > 4_000_000) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const p = JSON.parse(body || '{}');
+        const t = Array.isArray(p.tickers) ? p.tickers.map((x) => String(x).toUpperCase()) : null;
+        const M = Array.isArray(p.matrix) ? p.matrix : null;
+        const L = Array.isArray(p.cholesky) ? p.cholesky : null;
+        // Boyut tutarliligi burada dogrulanir: bozuk bir matris
+        // tarayicida sessizce yanlis senaryo uretirdi.
+        if (!t || !M || !L || !t.length
+            || M.length !== t.length || L.length !== t.length
+            || M.some((r) => !Array.isArray(r) || r.length !== t.length)
+            || L.some((r) => !Array.isArray(r) || r.length !== t.length)) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: 'tickers, matrix and cholesky must be square and same length' }));
+          return;
+        }
+        serverState.correlation = {
+          tickers: t, matrix: M, cholesky: L,
+          observations: Number(p.observations) || null,
+          shrinkage: Number(p.shrinkage) || 0,
+          avg_correlation: Number(p.avg_correlation) || 0,
+          raw_avg_correlation: Number(p.raw_avg_correlation) || 0,
+          data_mode: String(p.data_mode || ''),
+          ts: new Date().toISOString(),
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, assets: t.length }));
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: false, error: 'invalid json' }));

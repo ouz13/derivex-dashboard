@@ -76,6 +76,7 @@ IdealData REST ─────────────────────�
 | `watchlist.js` | İzleme listesi |
 | `auth.js` | API anahtarı doğrulama ve hız sınırı |
 | `backtest.py` | Kayan kökenli çapraz doğrulama |
+| `correlation.py` | Varlıklar arası korelasyon matrisi |
 | `bench_stream.py` | Veri boru hattı kapasite ölçümü |
 | `garch.py` | Depodaki geçmişten gerçekleşmiş volatilite ve GARCH(1,1) |
 | `yield_curve.py` / `fit_curve.py` | Nelson-Siegel-Svensson eğri uydurma |
@@ -624,3 +625,47 @@ uçlara erişir. Tam OAuth2 ayrı bir iş olarak duruyor.
 
 `X-Forwarded-For` **dikkate alınmaz**: istemcinin gönderdiği bir başlıktır ve
 güvenilen bir vekil sunucu olmadan ona bakmak doğrudan atlatma yolu açardı.
+
+## Korelasyon matrisi
+
+Risk hesabı **tek bir skaler korelasyon katsayısına** dayanıyordu (arayüzde elle
+girilen ρ, varsayılan 0.50) ve tek faktörlü bir model kullanıyordu:
+
+```
+z_i = √ρ·z_piyasa + √(1−ρ)·z_özgü
+```
+
+Bu, THYAO–GARAN ile THYAO–HEKTS korelasyonunu **aynı** kabul etmek demek. VaR bu
+varsayıma yüksek duyarlılık gösterdiği için sonuç sistematik olarak yanılıyordu.
+
+```bash
+python3 correlation.py            # hesapla ve dashboard'a gönder
+python3 correlation.py --show     # yalnızca ekrana yaz
+```
+
+Matris Risk sekmesinde ısı haritası olarak görünür; Monte Carlo onu Cholesky
+çarpanıyla kullanır (`z = L·ε`). Ölçülen etki: blok yapılı bir portföyde
+99% VaR **−171.020 → −152.700** (%10.7 fark), çünkü tek ρ=0.50 bloklar arası
+gerçek korelasyonu (0.13–0.40) olduğundan yüksek varsayıyordu.
+
+**Üç teknik karar:**
+
+- **Ortak tarih kesişimi** kullanılır (listwise). Çift bazlı hesap her çiftte
+  farklı örnek kullanacağı için pozitif yarı-tanımlı olmayan matris üretebilir
+  ve Cholesky patlar.
+- **Büzülme (shrinkage)** sabit-korelasyon hedefine doğru yapılır, birim
+  matrise değil. Birim matrise büzülmek varlıklar arası bağıntıyı sistematik
+  azaltır ve **riski olduğundan düşük** gösterirdi. Hedef sabit-korelasyon
+  olduğu için ortalama korelasyon korunur, yalnızca çiftler ortalamaya çekilir.
+- **Pozitif tanımlılık** özdeğer kırpmayla değil büzülmeyle sağlanır: PSD bir
+  örnek matrisi, PD bir hedefe λ>0 ile büzüldüğünde sonuç PD olur. Yine de kör
+  inanca bırakılmaz — Cholesky'nin kendisi sınama olarak kullanılıp
+  başarısızlıkta λ kademeli artırılır.
+
+Büzülme katsayısı gözlem/varlık oranına göre seçilir (örnek zayıfladıkça hedefe
+daha çok yaslanır). Tam Ledoit-Wolf tahmincisi bir iyileştirme olarak
+durmaktadır.
+
+**Matris portföydeki dayanakların tamamını kapsamıyorsa skaler ρ'ya düşülür** ve
+hangi varlığın eksik olduğu durum satırında yazılır. Eksik varlıkları bağımsız
+saymak, onların riskini olduğundan düşük gösterirdi.

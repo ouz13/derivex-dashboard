@@ -259,3 +259,133 @@ test('portfoy degeri pozisyon buyuklugu ile dogrusal olcekler', () => {
     { ...VARSAYILAN, nSims: 10, rho: 0.5 });
   assert.ok(Math.abs(cift.curVal - tek.curVal * 2) < Math.abs(tek.curVal) * 1e-9 + 1e-9);
 });
+
+// --- korelasyon matrisi yolu -----------------------------------------------
+
+/** Cholesky carpani uretir (test icin, correlation.py'nin JS karsiligi). */
+function cholesky(M) {
+  const p = M.length;
+  const L = Array.from({ length: p }, () => new Array(p).fill(0));
+  for (let i = 0; i < p; i++) {
+    for (let j = 0; j <= i; j++) {
+      let s = 0;
+      for (let k = 0; k < j; k++) s += L[i][k] * L[j][k];
+      if (i === j) L[i][j] = Math.sqrt(M[i][i] - s);
+      else L[i][j] = (M[i][j] - s) / L[j][j];
+    }
+  }
+  return L;
+}
+
+/** Iki dizinin ornek korelasyonu. */
+function korelasyon(a, b) {
+  const n = a.length;
+  const ma = a.reduce((x, y) => x + y, 0) / n;
+  const mb = b.reduce((x, y) => x + y, 0) / n;
+  let kov = 0, va = 0, vb = 0;
+  for (let i = 0; i < n; i++) {
+    kov += (a[i] - ma) * (b[i] - mb);
+    va += (a[i] - ma) ** 2;
+    vb += (b[i] - mb) ** 2;
+  }
+  return kov / Math.sqrt(va * vb);
+}
+
+const korPortfoy = [
+  { underlying: 'AAA', posType: 'call', qty: 1, spot: 100, strike: 100, delta: 0.5, dtm: 30 },
+  { underlying: 'BBB', posType: 'call', qty: 1, spot: 100, strike: 100, delta: 0.5, dtm: 30 },
+  { underlying: 'CCC', posType: 'call', qty: 1, spot: 100, strike: 100, delta: 0.5, dtm: 30 },
+];
+
+test('matris verildiginde HEDEF korelasyon senaryolara gecer', () => {
+  // Asil sinama: Cholesky carpani beslenince uretilen fiyat yollari
+  // gercekten hedeflenen korelasyonu tasiyor mu? Tasimasaydi matris
+  // hesaplanir, arayuzde gosterilir ama VaR'a hic yansimazdi.
+  const hedef = [[1, 0.9, 0.0], [0.9, 1, 0.0], [0.0, 0.0, 1]];
+  const kor = { tickers: ['AAA', 'BBB', 'CCC'], cholesky: cholesky(hedef) };
+
+  // Her senaryoda dayanak basina ulasilan fiyati topla
+  const yollar = { AAA: [], BBB: [], CCC: [] };
+  const orjSim = kapsam._riskSimulate;
+  // stMap yalnizca min/max tutuyor; yollari almak icin rnd'yi sarmalayip
+  // _riskSimulate'i her senaryo icin 1 kez calistiriyoruz.
+  for (let s = 0; s < 400; s++) {
+    const sim = orjSim(korPortfoy, {
+      nSims: 1, dt: 1 / 365, mult: 1, rho: 0.0,
+      volMap: { AAA: 0.3, BBB: 0.3, CCC: 0.3 },
+      rateMap: { AAA: 0.3, BBB: 0.3, CCC: 0.3 },
+      korelasyon: kor,
+    });
+    yollar.AAA.push(sim.stMap.AAA.minST);
+    yollar.BBB.push(sim.stMap.BBB.minST);
+    yollar.CCC.push(sim.stMap.CCC.minST);
+  }
+
+  const rAB = korelasyon(yollar.AAA, yollar.BBB);
+  const rAC = korelasyon(yollar.AAA, yollar.CCC);
+  assert.ok(rAB > 0.8, `AAA-BBB korelasyonu tasinmamis: ${rAB.toFixed(3)}`);
+  assert.ok(Math.abs(rAC) < 0.2, `AAA-CCC bagimsiz olmaliydi: ${rAC.toFixed(3)}`);
+});
+
+test('matris kullanildiginda kaynak bildirilir', () => {
+  const kor = { tickers: ['AAA', 'BBB', 'CCC'],
+                cholesky: cholesky([[1, 0.5, 0.5], [0.5, 1, 0.5], [0.5, 0.5, 1]]) };
+  const sim = kapsam._riskSimulate(korPortfoy, {
+    nSims: 50, dt: 1 / 365, mult: 1, rho: 0.5, korelasyon: kor,
+  });
+  assert.equal(sim.korKaynak, 'matrix');
+});
+
+test('matris EKSIK varlik iceriyorsa skaler yola DUSULUR', () => {
+  // Eksik varliklari bagimsiz saymak, onlarin riskini oldugundan
+  // dusuk gosterirdi. Sessizce yapmak yerine tumuyle skalere donuluyor.
+  const kor = { tickers: ['AAA', 'BBB'], cholesky: cholesky([[1, 0.5], [0.5, 1]]) };
+  const sim = kapsam._riskSimulate(korPortfoy, {
+    nSims: 50, dt: 1 / 365, mult: 1, rho: 0.5, korelasyon: kor,
+  });
+  assert.equal(sim.korKaynak, 'scalar', 'CCC matriste yokken matris kullanilmamali');
+});
+
+test('matris yoksa skaler rho ile eskisi gibi calisir', () => {
+  const sim = kapsam._riskSimulate(korPortfoy, {
+    nSims: 100, dt: 1 / 365, mult: 1, rho: 0.5,
+  });
+  assert.equal(sim.korKaynak, 'scalar');
+  assert.equal(sim.pnls.length, 100);
+});
+
+test('matris yolu da ayni dayanakta tutarli fiyat verir', () => {
+  // Ayni hissede iki pozisyon tek senaryoda ayni fiyati gormeli —
+  // skaler yolda sinanan bu ozellik matris yolunda da gecerli olmali.
+  const iki = [
+    { underlying: 'AAA', posType: 'call', qty: 1, spot: 100, strike: 100, delta: 0.5, dtm: 30 },
+    { underlying: 'AAA', posType: 'put', qty: 1, spot: 100, strike: 100, delta: -0.5, dtm: 30 },
+  ];
+  const kor = { tickers: ['AAA'], cholesky: [[1]] };
+  const sim = kapsam._riskSimulate(iki, {
+    nSims: 200, dt: 1 / 365, mult: 1, rho: 0.5, korelasyon: kor,
+  });
+  assert.equal(sim.korKaynak, 'matrix');
+  assert.equal(Object.keys(sim.stMap).length, 1, 'tek dayanak olmali');
+});
+
+test('skalere dusuldugunde EKSIK varliklar bildirilir', () => {
+  // Kullanici matrisin hangi varligi kapsamadigini bilmeden durumu
+  // duzeltemez; sessizce skalere dusmek bunu gizlerdi.
+  const kor = { tickers: ['AAA', 'BBB'], cholesky: cholesky([[1, 0.5], [0.5, 1]]) };
+  const sim = kapsam._riskSimulate(korPortfoy, {
+    nSims: 20, dt: 1 / 365, mult: 1, rho: 0.5, korelasyon: kor,
+  });
+  assert.equal(sim.korKaynak, 'scalar');
+  assert.deepEqual(sim.korEksik, ['CCC']);
+});
+
+test('matris tam kapsiyorsa eksik listesi bos', () => {
+  const kor = { tickers: ['AAA', 'BBB', 'CCC'],
+                cholesky: cholesky([[1, 0.5, 0.5], [0.5, 1, 0.5], [0.5, 0.5, 1]]) };
+  const sim = kapsam._riskSimulate(korPortfoy, {
+    nSims: 20, dt: 1 / 365, mult: 1, rho: 0.5, korelasyon: kor,
+  });
+  assert.equal(sim.korKaynak, 'matrix');
+  assert.deepEqual(sim.korEksik, []);
+});

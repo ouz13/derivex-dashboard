@@ -182,7 +182,8 @@ Beklenen mertebe: ayrıştırma ~800k msg/sn, toplu POST ~24k ticker/sn. Bunun
 ### Model doğruluğu
 
 ```bash
-python3 backtest.py --ufuk 30    # geçmiş veride model karşılaştırma
+python3 backtest.py --ufuk 30      # geçmiş veride model karşılaştırma
+python3 correlation.py --show      # korelasyon matrisini ekrana yaz
 ```
 
 Canlı doğruluk takibi `garch.py` ile otomatik işler; sonuç Discount Rate
@@ -212,7 +213,9 @@ dosya silinmemeli; inceleme için saklayın.
 | `HEALTH_CONFIRM` | `2` | Alarm için üst üste gözlem |
 | `ALERT_WEBHOOK_URL` | — | Durum değişiminde POST edilecek adres |
 | `CURVE_REFRESH_SEC` | `300` | Eğri kalibrasyon aralığı |
-| `GARCH_REFRESH_SEC` | `900` | GARCH yeniden hesap aralığı |
+| `GARCH_REFRESH_SEC` | `900` | GARCH ve korelasyon yeniden hesap aralığı |
+| `CORR_MIN_OBS` | `60` | Korelasyon için asgari ortak gözlem |
+| `CORR_MAX_ASSETS` | `40` | Matristeki azami varlık sayısı |
 | `API_KEYS` | — | `ad1:anahtar1,ad2:anahtar2`. Boşsa doğrulama kapalı |
 | `AUTH_ALLOW_LOCAL` | `1` | `0` ile yerel istekler de anahtar ister |
 | `RATE_LIMIT_RPM` | `600` | Anahtar başına dakikadaki istek |

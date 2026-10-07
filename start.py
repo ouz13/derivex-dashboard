@@ -286,6 +286,26 @@ def _egri_yenile(port):
         pass
 
 
+def _korelasyon_yenile(port):
+    """
+    Varliklar arasi korelasyon matrisini yeniden hesaplar.
+
+    Gunluk kapanislara dayandigi icin sik hesaplamanin anlami yok;
+    GARCH'la ayni tempoda calisiyor. Beklenmez.
+    """
+    if not os.path.isfile(os.path.join(KOK, "correlation.py")):
+        return
+    try:
+        log = open(os.path.join(KOK, "store.log"), "a")
+        subprocess.Popen([sys.executable, "-u", "correlation.py"], cwd=KOK,
+                         stdout=log, stderr=subprocess.STDOUT,
+                         env=dict(os.environ,
+                                  FRONTEND_BASE_URL=f"http://127.0.0.1:{port}",
+                                  DATA_MODE=str(DATA_MODE)))
+    except Exception:
+        pass
+
+
 def _garch_yenile(port):
     """
     Depodaki gunluk kapanislardan GARCH/RV tahminini yeniden hesaplar.
@@ -391,6 +411,7 @@ def izle(port):
         if simdi - son_garch >= GARCH_ARALIK:
             son_garch = simdi
             _garch_yenile(port)
+            _korelasyon_yenile(port)
         for ad, p in _surecler:
             if p.poll() is None:
                 continue
