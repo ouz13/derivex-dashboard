@@ -2321,6 +2321,223 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
         return bsPrice('C', S, K, r, T, iv);
       }
 
+      // ---------------------------------------------------------------
+      // VOLATILITE YUZEYI
+      //
+      // Tek dilim gorunumu tek vadeyi gosteriyor. Yuzey, TUM vadeleri
+      // ayri ayri kalibre edip tek bir izgarada birlestiriyor.
+      //
+      // ORTAK EKSEN MONEYNESS (K/S), ham kullanim fiyati degil: vadeler
+      // farkli kullanim fiyatlari tasiyor, ham strike ekseninde izgara
+      // tirtikli cikar ve vadeler karsilastirilamaz.
+      //
+      // Kalibre edilemeyen vade ATLANIYOR, komsulardan doldurulmuyor:
+      // uydurulmus bir dilim yuzeyin geri kalanindan ayirt edilemezdi.
+      // ---------------------------------------------------------------
+
+      // Moneyness izgarasi: para-basi cevresinde +-%15
+      const YUZEY_IZGARA = window._yuzeyIzgarasi(0.85, 1.15, 0.025);
+
+      function yuzeyHesapla(rawRows, istenen) {
+        // Vadeye gore grupla
+        const vadeler = new Map();
+        for (const r of rawRows) {
+          const e = String((r && r.expiry) || '');
+          const d = Number(r && r.dtm);
+          if (!e || !Number.isFinite(d) || d <= 0) continue;
+          if (!vadeler.has(e)) vadeler.set(e, { kod: e, dtm: d, satirlar: [] });
+          vadeler.get(e).satirlar.push(r);
+        }
+
+        const dilimler = [];
+        const atlanan = [];
+        for (const v of [...vadeler.values()].sort((a, b) => a.dtm - b.dtm)) {
+          const noktalar = [];
+          let S = null, r0 = null;
+          for (const row of v.satirlar) {
+            const K = Number(row?.strike);
+            const s = Number(row?.spot_mid);
+            const rr = Number(row?.rate);
+            const T = v.dtm / 365;
+            if (!(Number.isFinite(K) && Number.isFinite(s) && Number.isFinite(rr) && T > 0)) continue;
+            const cMid = mid(row?.call_bid_price, row?.call_ask_price);
+            const iv = Number.isFinite(cMid) ? rowMarketIv(row, 'C', cMid, s, K, rr, T) : null;
+            if (Number.isFinite(iv) && iv > 0) {
+              noktalar.push({ S: s, K, r: rr, T, mktIv: iv });
+              S = s; r0 = rr;
+            }
+          }
+          const onKabul = window._dilimKabulu(noktalar.length, true);
+          if (!onKabul.kabul || S === null) {
+            atlanan.push({ kod: v.kod, dtm: v.dtm, sebep: onKabul.sebep || 'no spot' });
+            continue;
+          }
+
+          const uydur = (ad) => {
+            try { return ad === 'svi' ? fitSvi(noktalar) : fitHeston(noktalar); }
+            catch (_) { return null; }
+          };
+          const diger = istenen === 'svi' ? 'heston' : 'svi';
+          const uyumlar = {};
+          uyumlar[istenen] = uydur(istenen);
+          if (!window._modelKabulEdilir(uyumlar[istenen]).ok) uyumlar[diger] = uydur(diger);
+
+          const secim = window._modelFallback({
+            istenen, uyumlar: { heston: uyumlar.heston || null, svi: uyumlar.svi || null },
+            varsayilan: {
+              heston: { kappa: 2.0, theta: 0.10, sigma: 0.50, rho: -0.50, v0: 0.10 },
+              svi: { a: 0.02, b: 0.2, rho: -0.4, m: 0.0, sigma: 0.2 },
+            },
+          });
+          // Kalibre edilemeyen dilim yuzeye GIRMIYOR: tohum
+          // parametreleriyle cizilmis bir dilim, gercek kalibrasyondan
+          // ayirt edilemezdi.
+          const kabul = window._dilimKabulu(noktalar.length, secim.guvenilir);
+          if (!kabul.kabul) {
+            atlanan.push({ kod: v.kod, dtm: v.dtm, sebep: kabul.sebep });
+            continue;
+          }
+
+          const ivler = YUZEY_IZGARA.map((m) => {
+            const K = S * m;
+            const T = v.dtm / 365;
+            const px = secim.model === 'svi'
+              ? sviCallPrice(S, K, r0, T, secim.params)
+              : hestonCallPrice(S, K, r0, T, secim.params);
+            if (!Number.isFinite(px) || px <= 0) return null;
+            const iv = impliedVol('C', px, S, K, r0, T);
+            return Number.isFinite(iv) && iv > 0 ? iv * 100 : null;
+          });
+
+          // Hem Heston hem SVI BES parametreli. Gozlem sayisi bunun iki
+          // katinin altindaysa uyum zayif belirlenmistir: RMSE kucuk
+          // cikar ama bu uyum kalitesi degildir, dilimin sekli buyuk
+          // olcude modelin kendi egilimidir. (NSS panelinde de ayni
+          // uyari var — orada 3 gozlem 4 parametreye uydurulmustu.)
+          dilimler.push({
+            kod: v.kod, dtm: v.dtm, model: secim.model, rmse: secim.rmse,
+            nokta: noktalar.length, S,
+            zayif: window._zayifBelirlenmisMi(noktalar.length),
+            ivler,
+            // Piyasa noktalari da tasiniyor: yuzeyin verinin neresinde
+            // destekli oldugunu gormek icin
+            piyasa: noktalar.map((p) => ({ m: p.K / p.S, iv: p.mktIv * 100 })),
+          });
+        }
+        return { dilimler, atlanan, izgara: YUZEY_IZGARA };
+      }
+
+      function yuzeyCiz(sonuc) {
+        const svg = document.getElementById('vcYuzeySvg');
+        const isi = document.getElementById('vcYuzeyIsi');
+        if (!svg || !isi) return;
+        const { dilimler, izgara } = sonuc;
+
+        // --- Ust uste smile egrileri (vade yapisi burada okunur) ---
+        const W = 960, H = 300, solK = 48, sagK = 120, ustK = 14, altK = 30;
+        const cW = W - solK - sagK, cH = H - ustK - altK;
+        let enAz = Infinity, enCok = -Infinity;
+        dilimler.forEach((d) => d.ivler.forEach((v) => {
+          if (v === null) return;
+          if (v < enAz) enAz = v; if (v > enCok) enCok = v;
+        }));
+        if (!Number.isFinite(enAz)) { enAz = 0; enCok = 1; }
+        const pay = Math.max(1, (enCok - enAz) * 0.12);
+        enAz -= pay; enCok += pay;
+
+        const x = (m) => solK + ((m - izgara[0]) / (izgara[izgara.length - 1] - izgara[0])) * cW;
+        const y = (v) => ustK + cH - ((v - enAz) / (enCok - enAz)) * cH;
+        // Vade uzadikca koyulasan tek renk ailesi: ayri renkler vade
+        // sirasini gizlerdi.
+        const renk = (i) => {
+          const t = dilimler.length < 2 ? 0 : i / (dilimler.length - 1);
+          return 'rgb(' + Math.round(190 - 150 * t) + ',' + Math.round(60 + 30 * t)
+               + ',' + Math.round(60 + 120 * t) + ')';
+        };
+
+        let p = '';
+        // Izgara ve eksenler
+        for (let i = 0; i <= 4; i++) {
+          const v = enAz + (enCok - enAz) * (i / 4);
+          const yy = y(v);
+          p += '<line x1="' + solK + '" y1="' + yy + '" x2="' + (solK + cW) + '" y2="' + yy
+             + '" stroke="#e2e8f0" stroke-width="1"/>';
+          p += '<text x="' + (solK - 6) + '" y="' + (yy + 3) + '" text-anchor="end" font-size="10"'
+             + ' fill="#94a3b8">' + v.toFixed(1) + '%</text>';
+        }
+        [0.9, 1.0, 1.1].forEach((m) => {
+          const xx = x(m);
+          p += '<line x1="' + xx + '" y1="' + ustK + '" x2="' + xx + '" y2="' + (ustK + cH)
+             + '" stroke="' + (m === 1 ? '#cbd5e1' : '#f1f5f9') + '" stroke-width="1"/>';
+          p += '<text x="' + xx + '" y="' + (H - 10) + '" text-anchor="middle" font-size="10"'
+             + ' fill="#94a3b8">' + m.toFixed(2) + '</text>';
+        });
+        p += '<text x="' + (solK + cW / 2) + '" y="' + (H - 1) + '" text-anchor="middle"'
+           + ' font-size="10" fill="#64748b">Moneyness (K/S)</text>';
+
+        dilimler.forEach((d, i) => {
+          const c = renk(i);
+          let yol = '';
+          d.ivler.forEach((v, j) => {
+            if (v === null) return;
+            yol += (yol ? ' L' : 'M') + x(izgara[j]).toFixed(1) + ',' + y(v).toFixed(1);
+          });
+          if (yol) p += '<path d="' + yol + '" fill="none" stroke="' + c + '" stroke-width="1.8"/>';
+          // Piyasa noktalari: yuzeyin nerede veriyle desteklendigi
+          d.piyasa.forEach((pt) => {
+            if (pt.m < izgara[0] || pt.m > izgara[izgara.length - 1]) return;
+            p += '<circle cx="' + x(pt.m).toFixed(1) + '" cy="' + y(pt.iv).toFixed(1)
+               + '" r="2" fill="' + c + '" opacity="0.55"/>';
+          });
+          // Sag taraftaki etiket
+          const sonY = (() => {
+            for (let j = d.ivler.length - 1; j >= 0; j--) if (d.ivler[j] !== null) return y(d.ivler[j]);
+            return ustK + cH / 2;
+          })();
+          p += '<text x="' + (solK + cW + 6) + '" y="' + (sonY + 3) + '" font-size="10" fill="'
+             + c + '">' + d.dtm + 'd \u00b7 ' + (d.model === 'svi' ? 'SVI' : 'Heston') + '</text>';
+        });
+        svg.innerHTML = p;
+
+        // --- Isi haritasi (izgaranin kendisi) ---
+        let enA = Infinity, enU = -Infinity;
+        dilimler.forEach((d) => d.ivler.forEach((v) => {
+          if (v === null) return;
+          if (v < enA) enA = v; if (v > enU) enU = v;
+        }));
+        const hucreRenk = (v) => {
+          if (v === null) return '#f8fafc';
+          const t = enU > enA ? (v - enA) / (enU - enA) : 0.5;
+          // acik sari -> koyu kirmizi
+          return 'rgb(' + Math.round(254 - 40 * t) + ',' + Math.round(240 - 150 * t)
+               + ',' + Math.round(200 - 170 * t) + ')';
+        };
+        let h = '<table style="border-collapse:collapse;font-size:9px;width:auto;">'
+              + '<thead><tr><th style="padding:2px 6px;text-align:left;font-size:9px;color:#475569;width:1px;">DTM</th>';
+        izgara.forEach((m) => {
+          h += '<th style="padding:2px 1px;font-size:8px;color:#94a3b8;font-weight:500;">'
+             + m.toFixed(2) + '</th>';
+        });
+        h += '</tr></thead><tbody>';
+        dilimler.forEach((d) => {
+          h += '<tr><td style="padding:2px 6px;font-weight:600;color:#475569;'
+             + 'white-space:nowrap;width:1px;">' + d.dtm + 'd</td>';
+          d.ivler.forEach((v, j) => {
+            const baslik = d.dtm + 'd, K/S=' + izgara[j].toFixed(3) + ': '
+                         + (v === null ? 'n/a' : v.toFixed(2) + '%');
+            h += '<td title="' + baslik + '" style="padding:0;width:26px;height:16px;background:'
+               + hucreRenk(v) + ';border:0.5px solid #fff;"></td>';
+          });
+          h += '</tr>';
+        });
+        h += '</tbody></table>'
+           + '<div style="font-size:10px;color:#94a3b8;margin-top:5px;">'
+           + 'IV range ' + enA.toFixed(1) + '% \u2013 ' + enU.toFixed(1) + '%. '
+           + 'Hover a cell for the value. Dots on the curves are market quotes \u2014 '
+           + 'the surface is only supported by data where they appear.</div>';
+        isi.innerHTML = h;
+      }
+
       function renderCurveSvg(pointsMarket, pointsModel, modelName) {
         if (!svgEl) return;
         const allPoints = [...pointsMarket, ...pointsModel].filter((p) => Number.isFinite(p.k) && Number.isFinite(p.iv));
@@ -2390,6 +2607,9 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
 
         if (statusEl) statusEl.textContent = 'Loading THYAO chain...';
         if (refreshBtn) refreshBtn.disabled = true;
+        // Yuzey burada OTOMATIK kurulmuyor: Heston vade basina ~2,8 sn
+        // suruyor (olculdu) ve her sayfa acilisinda bunu odemek gereksiz.
+        // Kullanici isteyince kuruluyor.
         try {
           const resp = await fetch('/api/options-chain?ticker=' + TARGET_TICKER);
           if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -2619,6 +2839,69 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
       }
 
       if (refreshBtn) refreshBtn.addEventListener('click', loadVolCurve);
+
+      const yuzeyBtn = document.getElementById('vcYuzeyBtn');
+      if (yuzeyBtn) {
+        yuzeyBtn.addEventListener('click', async () => {
+          const durum = document.getElementById('vcYuzeyDurum');
+          const govde = document.getElementById('vcYuzeyGovde');
+          const istenen = modelEl && String(modelEl.value || '').toLowerCase() === 'svi' ? 'svi' : 'heston';
+          yuzeyBtn.disabled = true;
+          durum.textContent = 'calibrating each maturity'
+            + (istenen === 'heston' ? ' (Heston takes ~3s per maturity)' : '') + '…';
+          durum.style.color = '#64748b';
+          // Durum yazisinin boyanmasi icin bir kare bekle: aksi halde
+          // senkron kalibrasyon ana is parcacigini kilitler ve kullanici
+          // hicbir geri bildirim gormez.
+          await new Promise((r) => setTimeout(r, 30));
+          try {
+            const resp = await fetch('/api/options-chain?ticker=' + TARGET_TICKER);
+            const data = await resp.json();
+            const rawRows = Array.isArray(data && data.options) ? data.options : [];
+            const t0 = performance.now ? performance.now() : Date.now();
+            const sonuc = yuzeyHesapla(rawRows, istenen);
+            const ms = Math.round((performance.now ? performance.now() : Date.now()) - t0);
+
+            if (!sonuc.dilimler.length) {
+              durum.textContent = 'no maturity could be calibrated'
+                + (sonuc.atlanan.length
+                    ? ' — ' + sonuc.atlanan.map((a) => a.dtm + 'd: ' + a.sebep).join(', ')
+                    : '');
+              durum.style.color = '#b45309';
+              govde.style.display = 'none';
+              return;
+            }
+            yuzeyCiz(sonuc);
+            govde.style.display = '';
+            let metin = sonuc.dilimler.length + ' maturit'
+              + (sonuc.dilimler.length === 1 ? 'y' : 'ies') + ' calibrated in ' + ms + ' ms \u00b7 '
+              + sonuc.dilimler.map((d) => d.dtm + 'd (' + d.nokta + ' quotes, RMSE '
+                  + (d.rmse * 100).toFixed(2) + ')').join(' \u00b7 ');
+            // Zayif belirlenmis dilimler isaretlenir: kucuk RMSE'yi
+            // iyi uyum sanmak, yuzeyin seklini veriye atfetmek olur.
+            const zayiflar = sonuc.dilimler.filter((d) => d.zayif);
+            if (zayiflar.length) {
+              metin += ' \u00b7 WEAKLY DETERMINED: '
+                + zayiflar.map((d) => d.dtm + 'd').join(', ')
+                + ' have fewer than 10 quotes for 5 parameters \u2014 low RMSE is not'
+                + ' a fit-quality measure here, the shape is largely the model\u2019s own';
+            }
+            // Atlananlar GIZLENMIYOR: eksik bir vade, yuzeyin neyi
+            // kapsamadigini soyler.
+            if (sonuc.atlanan.length) {
+              metin += ' \u00b7 skipped: '
+                + sonuc.atlanan.map((a) => a.dtm + 'd (' + a.sebep + ')').join(', ');
+            }
+            durum.style.color = (sonuc.atlanan.length || zayiflar.length) ? '#b45309' : '#64748b';
+            durum.textContent = metin;
+          } catch (e) {
+            durum.textContent = 'failed: ' + (e && e.message ? e.message : 'unknown');
+            durum.style.color = '#dc2626';
+          } finally {
+            yuzeyBtn.disabled = false;
+          }
+        });
+      }
       if (modelEl) modelEl.addEventListener('change', loadVolCurve);
       loadVolCurve();
       setInterval(loadVolCurve, 10000);
@@ -4176,6 +4459,20 @@ function toolsContent(toolsTab) {
         </div>
         <div class="vc-chart-wrap">
           <svg id="vcSvg" class="vc-chart" viewBox="0 0 960 260" role="img" aria-label="Volatility curve chart"></svg>
+        </div>
+        <div id="vcYuzeyPanel" style="margin-top:20px;border-top:1px solid #e2e8f0;padding-top:14px;">
+          <div style="display:flex;gap:10px;align-items:center;margin-bottom:4px;">
+            <span style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">Volatility Surface</span>
+            <button class="action-btn" type="button" id="vcYuzeyBtn" style="padding:2px 9px;font-size:11px;">Build surface</button>
+          </div>
+          <p class="rv-top-note" style="margin:0 0 8px;">All maturities, calibrated separately. The common axis is
+            <b>moneyness (K/S)</b> because strikes differ between maturities. Maturities with too few quotes
+            are left out rather than interpolated.</p>
+          <div id="vcYuzeyDurum" style="font-size:12px;color:#64748b;">not built yet</div>
+          <div id="vcYuzeyGovde" style="display:none;margin-top:10px;">
+            <svg id="vcYuzeySvg" viewBox="0 0 960 300" style="width:100%;height:auto;" role="img" aria-label="Volatility surface slices"></svg>
+            <div id="vcYuzeyIsi" style="margin-top:10px;overflow-x:auto;"></div>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="vc-table">

@@ -32,6 +32,9 @@
     root._modelFallback = api.secParametreler;
     root._modelVeriYasi = api.veriYasi;
     root._modelKabulEdilir = api.kabulEdilir;
+    root._yuzeyIzgarasi = api.yuzeyIzgarasi;
+    root._dilimKabulu = api.dilimKabulu;
+    root._zayifBelirlenmisMi = api.zayifBelirlenmisMi;
     root._MODEL_FALLBACK = api;
   }
 }(typeof self !== 'undefined' ? self : this, function () {
@@ -191,12 +194,63 @@
     return Math.floor(sn / 86400) + 'd old';
   }
 
+  // -------------------------------------------------------------------
+  // Volatilite yuzeyi — dilim kabul kararlari
+  //
+  // Yuzey, her vadeyi AYRI kalibre edip birlestiriyor. Hangi dilimin
+  // yuzeye girecegi burada karara baglaniyor; mantik tarayici kodundan
+  // ayri durdugu icin sinanabiliyor.
+  // -------------------------------------------------------------------
+
+  // Hem Heston hem SVI bes parametreli.
+  var MODEL_PARAM_SAYISI = 5;
+
+  /**
+   * Gozlem sayisi parametre sayisinin iki katinin altindaysa uyum zayif
+   * belirlenmistir: RMSE kucuk cikar ama bu uyum kalitesi DEGILDIR,
+   * dilimin sekli buyuk olcude modelin kendi egilimidir.
+   */
+  function zayifBelirlenmisMi(noktaSayisi, paramSayisi) {
+    var p = paramSayisi || MODEL_PARAM_SAYISI;
+    return (noktaSayisi || 0) < 2 * p;
+  }
+
+  /**
+   * Bir dilim yuzeye girer mi?
+   *
+   * Kalibre edilemeyen dilim ATLANIR, komsulardan doldurulmaz:
+   * uydurulmus bir dilim yuzeyin geri kalanindan ayirt edilemezdi.
+   *
+   * doner: {kabul, sebep}
+   */
+  function dilimKabulu(noktaSayisi, guvenilir) {
+    var n = noktaSayisi || 0;
+    if (n < 2) return { kabul: false, sebep: n + ' usable quote(s)' };
+    if (!guvenilir) return { kabul: false, sebep: 'not calibrated' };
+    return { kabul: true, sebep: null };
+  }
+
+  /** Ortak moneyness izgarasi (K/S). Vadeler arasi karsilastirma icin. */
+  function yuzeyIzgarasi(alt, ust, adim) {
+    var a = typeof alt === 'number' ? alt : 0.85;
+    var u = typeof ust === 'number' ? ust : 1.15;
+    var d = typeof adim === 'number' && adim > 0 ? adim : 0.025;
+    var out = [];
+    // Kayan nokta birikimi son adimi kaybettirmesin diye kucuk tolerans
+    for (var m = a; m <= u + 1e-9; m += d) out.push(Math.round(m * 1000) / 1000);
+    return out;
+  }
+
   return {
     secParametreler: secParametreler,
     kabulEdilir: kabulEdilir,
     veriYasi: veriYasi,
+    zayifBelirlenmisMi: zayifBelirlenmisMi,
+    dilimKabulu: dilimKabulu,
+    yuzeyIzgarasi: yuzeyIzgarasi,
     AZAMI_RMSE: AZAMI_RMSE,
     TAZE_SN: TAZE_SN,
     BAYAT_SN: BAYAT_SN,
+    MODEL_PARAM_SAYISI: MODEL_PARAM_SAYISI,
   };
 }));

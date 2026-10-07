@@ -233,3 +233,61 @@ test('esikler disaridan verilebilir', () => {
   const y = MF.veriYasi('2026-10-06T11:59:50Z', simdi, { taze: 5, bayat: 20 });
   assert.equal(y.durum, 'bayat', '10sn, 5sn esigine gore bayat olmali');
 });
+
+// --- volatilite yuzeyi: dilim kabul kararlari ------------------------------
+
+test('moneyness izgarasi para-basini icerir ve sinirlarda biter', () => {
+  const g = MF.yuzeyIzgarasi(0.85, 1.15, 0.025);
+  assert.equal(g[0], 0.85);
+  assert.equal(g[g.length - 1], 1.15, 'kayan nokta birikimi son adimi dusurmemeli');
+  assert.ok(g.includes(1), 'para-basi izgarada olmali');
+  // Adimlar duzgun
+  for (let i = 1; i < g.length; i++) {
+    assert.ok(Math.abs((g[i] - g[i - 1]) - 0.025) < 1e-9, `adim ${i} bozuk`);
+  }
+});
+
+test('izgara varsayilanlarla da calisir', () => {
+  const g = MF.yuzeyIzgarasi();
+  assert.ok(g.length > 5);
+  assert.ok(g.includes(1));
+});
+
+test('IKI NOKTADAN AZ dilim yuzeye girmez', () => {
+  // Iki noktadan az ile kalibrasyon yapilamaz.
+  assert.equal(MF.dilimKabulu(0, true).kabul, false);
+  assert.equal(MF.dilimKabulu(1, true).kabul, false);
+  assert.match(MF.dilimKabulu(1, true).sebep, /usable quote/);
+  assert.equal(MF.dilimKabulu(2, true).kabul, true);
+});
+
+test('KALIBRE EDILEMEYEN dilim yuzeye girmez', () => {
+  // Tohum parametreleriyle cizilmis bir dilim, gercek kalibrasyondan
+  // ayirt edilemezdi; komsulardan doldurmak da yanlis olurdu.
+  const k = MF.dilimKabulu(9, false);
+  assert.equal(k.kabul, false);
+  assert.equal(k.sebep, 'not calibrated');
+});
+
+test('nokta sayisi yetersizse sebep KALIBRASYON degil nokta eksikligi', () => {
+  // Siralamanin onemi: 1 nokta hem az hem kalibre edilemez, ama
+  // kullaniciya soylenecek sey "yeterli kotasyon yok".
+  assert.match(MF.dilimKabulu(1, false).sebep, /usable quote/);
+});
+
+test('zayif belirlenmislik parametre sayisina gore', () => {
+  // Hem Heston hem SVI bes parametreli: 10 gozlemin altinda zayif.
+  assert.equal(MF.zayifBelirlenmisMi(9), true);
+  assert.equal(MF.zayifBelirlenmisMi(10), false);
+  assert.equal(MF.zayifBelirlenmisMi(20), false);
+  assert.equal(MF.zayifBelirlenmisMi(0), true);
+  // Parametre sayisi disaridan verilebilir
+  assert.equal(MF.zayifBelirlenmisMi(9, 3), false);
+  assert.equal(MF.zayifBelirlenmisMi(5, 3), true);
+});
+
+test('zayif belirlenmislik kabulu ENGELLEMEZ', () => {
+  // Dilim yuzeye girer ama uyarilir: gizlemek yerine isaretlemek.
+  assert.equal(MF.dilimKabulu(9, true).kabul, true);
+  assert.equal(MF.zayifBelirlenmisMi(9), true);
+});

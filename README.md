@@ -725,3 +725,32 @@ TLS_CERT=dev-cert.pem TLS_KEY=dev-key.pem python3 start.py
 
 **Sertifika okunamazsa sunucu başlamaz.** Sessizce HTTP'ye düşmek, operatörün
 şifreli çalıştığını sanırken düz metin yayın yapması demek olurdu.
+
+## Volatilite yüzeyi
+
+Volatility Curve sekmesi tek vade kesitini gösteriyordu — smile/skew eğrisi
+vardı, yüzey yoktu. **Build surface** düğmesi artık tüm vadeleri ayrı ayrı
+kalibre edip tek ızgarada birleştiriyor.
+
+**Ortak eksen moneyness (K/S)**, ham kullanım fiyatı değil: vadeler farklı
+strike'lar taşıyor, ham eksende ızgara tırtıklı çıkar ve vadeler
+karşılaştırılamaz.
+
+İki görünüm: üst üste bindirilmiş smile eğrileri (vade yapısı burada okunur,
+noktalar piyasa kotasyonları) ve ızgaranın kendisi ısı haritası olarak.
+
+**Üç şey bilinçli olarak gizlenmiyor:**
+
+- **Kalibre edilemeyen vade atlanır**, komşulardan doldurulmaz. Uydurulmuş bir
+  dilim, yüzeyin geri kalanından ayırt edilemezdi. Atlanan vade ve sebebi
+  durum satırında yazılır.
+- **Zayıf belirlenmişlik uyarısı.** Hem Heston hem SVI beş parametreli; vade
+  başına 10'dan az kotasyon varsa RMSE küçük çıkar ama **bu uyum kalitesi
+  değildir** — dilimin şekli büyük ölçüde modelin kendi eğilimidir. VİOP'ta
+  vade başına tipik olarak 9 kotasyon olduğu için bu uyarı pratikte sürekli
+  görünür, ve görünmesi gerekir.
+- **Piyasa noktaları eğrilerin üzerinde** çizilir: yüzeyin verinin neresinde
+  desteklendiği görülsün diye.
+
+**Yüzey otomatik kurulmaz.** Heston vade başına ~2,8 saniye sürüyor (ölçüldü);
+her sayfa açılışında bunu ödemek gereksiz. SVI ile neredeyse anlık.
