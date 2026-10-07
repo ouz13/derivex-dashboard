@@ -28,3 +28,7 @@ backtest_results.json
 # Son iyi kalibrasyonlar — calisma zamani durumu, mock/canli modu tasir
 model_params.json
 health_alerts.jsonl
+
+# Gelistirme sertifikasi (node auth.js --cert)
+dev-cert.pem
+dev-key.pem

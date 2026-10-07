@@ -219,6 +219,10 @@ dosya silinmemeli; inceleme için saklayın.
 | `API_KEYS` | — | `ad1:anahtar1,ad2:anahtar2`. Boşsa doğrulama kapalı |
 | `AUTH_ALLOW_LOCAL` | `1` | `0` ile yerel istekler de anahtar ister |
 | `RATE_LIMIT_RPM` | `600` | Anahtar başına dakikadaki istek |
+| `AUTH_PROTECT_PAGES` | `0` | `1` ile HTML sayfaları da anahtar ister |
+| `SESSION_SECRET` | rastgele | Çerez imzalama sırrı; verilmezse her başlatmada üretilir |
+| `SESSION_TTL_SEC` | `43200` | Oturum ömrü (12 saat) |
+| `TLS_CERT` / `TLS_KEY` | — | İkisi de verilirse HTTPS ile çalışır |
 | `STORE_DB` | `derivex.db` | Veritabanı yolu |
 | `STORE_ENABLED` | `1` | `0` ile kalıcılık kapatılır |
 | `GARCH_MIN_RETURNS` | `60` | GARCH için asgari getiri |
@@ -248,6 +252,34 @@ curl -H "Authorization: Bearer <anahtar>" http://sunucu:5173/api/audit
 | `401` | Anahtar gönderilmemiş |
 | `403` | Anahtar geçersiz |
 | `429` | Hız sınırı aşıldı (`Retry-After` başlığına bakın) |
+
+### WebSocket
+
+```
+ws://sunucu:5173/ws?topics=spot,options&key=<anahtar>
+```
+
+Konular: `spot`, `futures`, `options`, `other`, `health`, hepsi için `*`.
+Bağlantı sırasında `{"subscribe":["options"]}` ile değiştirilebilir.
+
+Anahtar sorgu parametresinden de kabul edilir (tarayıcı WebSocket'i özel başlık
+gönderemez). **Sorgu dizeleri erişim kayıtlarına düşer** — sunucu-sunucu
+entegrasyonda `X-API-Key` başlığını kullanın.
+
+### Sayfa koruması ve TLS
+
+```bash
+node auth.js --generate     # anahtar + oturum sırrı
+node auth.js --cert         # geliştirme sertifikası (ÜRETİMDE KULLANMAYIN)
+
+AUTH_PROTECT_PAGES=1 TLS_CERT=dev-cert.pem TLS_KEY=dev-key.pem python3 start.py
+```
+
+Sayfa koruması açıkken tarayıcı `/login`'e yönlendirilir; anahtar bir kez
+girilir, karşılığında imzalı oturum çerezi verilir.
+
+**Sertifika okunamazsa sunucu başlamaz** — sessizce HTTP'ye düşmek, şifreli
+çalıştığınızı sanırken düz metin yayın yapmak olurdu.
 
 **Yerel istekler varsayılan olarak muaftır** — veri köprüsü ve arayüz aynı
 makineden konuşuyor. `AUTH_ALLOW_LOCAL=0` ile bu kaldırılır, ama o zaman
@@ -294,12 +326,11 @@ sayar; `degraded` konteyneri yeniden başlatmaz.
 
 Bunlar arıza değil, bilinen sınırlar:
 
-- **Kimlik doğrulama bir alt kümedir.** API anahtarı + hız sınırı var,
-  OAuth2 yok (jeton süresi, yenileme, yetki kapsamı yok). `API_KEYS`
-  tanımlanmazsa doğrulama **kapalıdır** ve `/health` bunu bildirir.
-- **Sayfalar korunmuyor.** Yalnızca `/api/*` korunur; tarayıcı gezinmesi özel
-  başlık taşıyamadığı için HTML sayfaları açıktır. Dışa açarken önüne TLS ve
-  sayfa kimlik doğrulaması yapan bir ters vekil sunucu koyun.
+- **Kimlik doğrulama bir alt kümedir.** API anahtarı + hız sınırı + oturum
+  çerezi var, OAuth2 yok (jeton süresi, yenileme, yetki kapsamı yok).
+  `API_KEYS` tanımlanmazsa doğrulama **kapalıdır** ve `/health` bunu bildirir.
+- **Sayfa koruması varsayılan kapalıdır.** `AUTH_PROTECT_PAGES=1` ile açılır;
+  açılmazsa yalnızca `/api/*` korunur ve HTML sayfaları açık kalır.
 - **Ölçek sınırı.** Toplu POST sonrası ~24k msg/sn. Daha fazlası için
   mesajlaşma altyapısı gerekir.
 - **Spot olmayan dayanaklar.** Endeks/FX/emtia vadelilerinde ima edilen getiri

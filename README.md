@@ -74,7 +74,8 @@ IdealData REST ─────────────────────�
 | `model_fallback.js` | Kalibrasyon başarısızlığında fallback zinciri |
 | `health.js` | Servis sağlığı değerlendirmesi ve alarm kararı (`/health`) |
 | `watchlist.js` | İzleme listesi |
-| `auth.js` | API anahtarı doğrulama ve hız sınırı |
+| `auth.js` | API anahtarı doğrulama, hız sınırı, oturum çerezi |
+| `ws.js` | WebSocket (RFC 6455), bağımlılıksız |
 | `backtest.py` | Kayan kökenli çapraz doğrulama |
 | `correlation.py` | Varlıklar arası korelasyon matrisi |
 | `bench_stream.py` | Veri boru hattı kapasite ölçümü |
@@ -669,3 +670,58 @@ durmaktadır.
 **Matris portföydeki dayanakların tamamını kapsamıyorsa skaler ρ'ya düşülür** ve
 hangi varlığın eksik olduğu durum satırında yazılır. Eksik varlıkları bağımsız
 saymak, onların riskini olduğundan düşük gösterirdi.
+
+## WebSocket
+
+Kurumsal tüketiciler veriyi HTTP ile **yoklamak** zorundaydı. Artık abone
+olunabiliyor:
+
+```
+ws://sunucu:5173/ws?topics=spot,options&key=<anahtar>
+```
+
+Konular: `spot`, `futures`, `options`, `other`, `health`, ya da hepsi için `*`.
+Bağlantı sırasında abonelik değiştirilebilir:
+
+```json
+{"subscribe": ["options"]}
+```
+
+**Bağımlılık eklenmedi.** El sıkışması ve çerçeveleme elle yazıldı (~150 satır);
+projede hiçbir çalışma zamanı bağımlılığı olmaması ilkesini tek bir özellik için
+bozmak, kurulumu ve güvenlik yüzeyini kalıcılaştıracak bir maliyetti.
+
+**Desteklenmeyenler açıkça reddedilir** — parçalı çerçeve, ikili veri, uzantılar,
+maskesiz istemci çerçevesi. Sessizce yanlış çözmektense bağlantıyı protokol
+hatasıyla kapatmak doğrusu.
+
+> İstemci yazarken dikkat: sunucudan gelen çerçeveler **maskesizdir**. `ws.js`
+> içindeki çözücü sunucu tarafı içindir ve maskesiz çerçeveyi reddeder.
+
+Anahtar sorgu parametresinden de kabul edilir, çünkü tarayıcı WebSocket'i özel
+başlık gönderemez. Bu bir ödün: sorgu dizeleri erişim kayıtlarına düşer.
+Sunucu-sunucu entegrasyonda `X-API-Key` başlığını tercih edin.
+
+## TLS ve sayfa koruması
+
+A6'da yalnızca `/api/*` korunuyordu; tarayıcı gezinmesi özel başlık
+taşıyamadığı için HTML sayfaları açıktı. Artık:
+
+```bash
+AUTH_PROTECT_PAGES=1 python3 start.py
+```
+
+Sayfaya girişte anahtar **bir kez** sorulur (`/login`), karşılığında **HMAC ile
+imzalı** bir oturum çerezi verilir. İmzasız bir çerez, içeriği değiştirip
+başkası gibi görünmeye izin verirdi. Çerez `HttpOnly` (JavaScript okuyamaz),
+`SameSite=Strict` (başka sitelerden gönderilmez) ve TLS varken `Secure`.
+
+HTTPS doğrudan da çalışır:
+
+```bash
+node auth.js --cert                                    # geliştirme sertifikası
+TLS_CERT=dev-cert.pem TLS_KEY=dev-key.pem python3 start.py
+```
+
+**Sertifika okunamazsa sunucu başlamaz.** Sessizce HTTP'ye düşmek, operatörün
+şifreli çalıştığını sanırken düz metin yayın yapması demek olurdu.

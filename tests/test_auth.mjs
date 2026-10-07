@@ -215,3 +215,91 @@ test('uretilen anahtar yeterince uzun ve her seferinde farkli', () => {
   // Uretilen anahtar kendi cozucusunden gecmeli
   assert.equal(A.anahtarlariCoz(`x:${a}`).size, 1);
 });
+
+// --- oturum cerezi (sayfa korumasi) ----------------------------------------
+
+const SIR = 'test-oturum-sirri-123456';
+
+test('uretilen cerez dogrulanir ve kimligi tasir', () => {
+  const c = A.cerezUret('partner1', SIR);
+  assert.equal(A.cerezDogrula(c, SIR, 3600), 'partner1');
+});
+
+test('BASKA sir ile dogrulanmaz', () => {
+  // Imzasiz ya da sahte imzali bir cerez, icerigi degistirip baskasi
+  // gibi gorunmeye izin verirdi.
+  const c = A.cerezUret('partner1', SIR);
+  assert.equal(A.cerezDogrula(c, 'baska-sir-98765432', 3600), null);
+});
+
+test('KURCALANAN cerez reddedilir', () => {
+  const c = A.cerezUret('partner1', SIR);
+  const i = c.lastIndexOf('.');
+  // Govdeyi degistir, imzayi oldugu gibi birak
+  const sahte = 'yonetici|' + Date.now() + c.slice(i);
+  assert.equal(A.cerezDogrula(sahte, SIR, 3600), null);
+});
+
+test('SURESI DOLMUS cerez reddedilir', () => {
+  // 13 saat once verilmis bir cerez, 12 saatlik omurle gecersiz olmali.
+  const eski = Date.now() - 13 * 3600 * 1000;
+  const c = A.cerezUret('partner1', SIR, eski);
+  assert.equal(A.cerezDogrula(c, SIR, 12 * 3600), null, 'omur asilinca gecersiz olmali');
+  // Ayni cerez daha uzun omurle hala gecerli
+  assert.equal(A.cerezDogrula(c, SIR, 24 * 3600), 'partner1');
+});
+
+test('bozuk cerez degerleri cokme yapmaz', () => {
+  for (const v of ['', null, undefined, 'nokta-yok', 'a.b', '|.imza', 'ad|abc.imza']) {
+    assert.equal(A.cerezDogrula(v, SIR, 3600), null, String(v));
+  }
+});
+
+test('cerez basliktan cikarilir', () => {
+  const r = { headers: { cookie: 'other=1; derivex_session=abc.def; x=2' }, socket: {} };
+  assert.equal(A.istekCerezi(r), 'abc.def');
+  assert.equal(A.istekCerezi({ headers: {}, socket: {} }), null);
+});
+
+// --- sayfa korumasi --------------------------------------------------------
+
+test('sayfalariKoru KAPALIYKEN sayfalar acik', () => {
+  const k = A.kontrolEt(istek(), '/market/futures', ayar());
+  assert.equal(k.izin, true);
+});
+
+test('sayfalariKoru ACIKKEN sayfalar da anahtar ister', () => {
+  const k = A.kontrolEt(istek(), '/market/futures', ayar({ sayfalariKoru: true }));
+  assert.equal(k.izin, false);
+  assert.equal(k.durum, 401);
+});
+
+test('sayfa korumasi acikken /health yine muaf', () => {
+  // Kapali olsaydi konteyner saglik kontrolu de anahtar tasimak
+  // zorunda kalirdi.
+  assert.equal(A.kontrolEt(istek(), '/health', ayar({ sayfalariKoru: true })).izin, true);
+});
+
+test('gecerli oturum cerezi sayfayi acar', () => {
+  const c = A.cerezUret('partner1', SIR);
+  const r = istek({ basliklar: { cookie: `derivex_session=${c}` } });
+  const k = A.kontrolEt(r, '/market/futures',
+                        ayar({ sayfalariKoru: true, cerezSir: SIR, cerezOmurSn: 3600 }));
+  assert.equal(k.izin, true);
+  assert.equal(k.sebep, 'session');
+  assert.equal(k.kimlik, 'partner1');
+});
+
+test('gecersiz cerez anahtar yoluna duser', () => {
+  const r = istek({ basliklar: { cookie: 'derivex_session=sahte.imza' } });
+  const k = A.kontrolEt(r, '/api/spot',
+                        ayar({ cerezSir: SIR, cerezOmurSn: 3600 }));
+  assert.equal(k.izin, false);
+  assert.equal(k.durum, 401, 'cerez gecersizse anahtar sorulmali');
+});
+
+test('cerez API ucunda da gecerli', () => {
+  const c = A.cerezUret('partner1', SIR);
+  const r = istek({ basliklar: { cookie: `derivex_session=${c}` } });
+  assert.equal(A.kontrolEt(r, '/api/spot', ayar({ cerezSir: SIR, cerezOmurSn: 3600 })).izin, true);
+});

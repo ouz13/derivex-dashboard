@@ -113,6 +113,17 @@ const AUTH = require('./auth.js');
 const API_KEYS = AUTH.anahtarlariCoz(process.env.API_KEYS || '');
 const AUTH_ALLOW_LOCAL = process.env.AUTH_ALLOW_LOCAL !== '0';
 const RATE_LIMIT_RPM = Number(process.env.RATE_LIMIT_RPM) || 600;
+// Sayfa korumasi: acikken HTML sayfalari da anahtar ister. Tarayici
+// gezinmesi ozel baslik tasiyamadigi icin anahtar bir kez sorulup
+// karsiliginda imzali oturum cerezi veriliyor.
+const AUTH_PROTECT_PAGES = process.env.AUTH_PROTECT_PAGES === '1';
+// Cerez imzalama sirri. Verilmezse surec basinda uretilir — yeniden
+// baslatmada oturumlar duser, tek surecli bir panoda kabul edilebilir.
+const SESSION_SECRET = process.env.SESSION_SECRET
+  || require('crypto').randomBytes(32).toString('base64url');
+const SESSION_TTL_SEC = Number(process.env.SESSION_TTL_SEC) || 43200;   // 12 saat
+const TLS_CERT = process.env.TLS_CERT || '';
+const TLS_KEY = process.env.TLS_KEY || '';
 const hizSiniri = new AUTH.HizSiniri(RATE_LIMIT_RPM);
 // Kayan pencere listeleri bellekte birikmesin
 setInterval(() => hizSiniri.temizle(), 60000).unref?.();
@@ -4814,18 +4825,114 @@ async function getRealizedVolTable(forceRefresh = false) {
 
 const xlsxBundlePath = path.join(__dirname, 'node_modules', 'xlsx', 'dist', 'xlsx.full.min.js');
 
-const server = http.createServer(async (req, res) => {
+function girisSayfasi() {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Derivex Dashboard — Sign in</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       background:#f1f3f7;margin:0;display:flex;align-items:center;
+       justify-content:center;min-height:100vh;padding:16px;}
+  .kutu{background:#fff;border-radius:10px;padding:32px;max-width:400px;width:100%;
+        box-shadow:0 1px 3px rgba(0,0,0,.1);}
+  h1{font-size:19px;margin:0 0 4px;color:#0f1728;}
+  p{font-size:13px;color:#64748b;margin:0 0 20px;line-height:1.5;}
+  input{width:100%;padding:10px 12px;font-size:14px;border:1px solid #cbd5e1;
+        border-radius:6px;box-sizing:border-box;font-family:monospace;}
+  button{width:100%;margin-top:12px;padding:10px;font-size:14px;font-weight:600;
+         background:#0f1728;color:#fff;border:0;border-radius:6px;cursor:pointer;}
+  button:hover{background:#1e293b;}
+  .hata{color:#dc2626;font-size:13px;margin-top:12px;display:none;}
+</style></head><body>
+<div class="kutu">
+  <h1>Derivex Dashboard</h1>
+  <p>Enter your API key. It is exchanged for a session cookie, so you only
+     need to do this once per browser.</p>
+  <form id="f">
+    <input id="k" type="password" placeholder="API key" autocomplete="off" autofocus>
+    <button type="submit">Sign in</button>
+  </form>
+  <div class="hata" id="e"></div>
+</div>
+<script>
+document.getElementById('f').addEventListener('submit', function(ev){
+  ev.preventDefault();
+  var e=document.getElementById('e'); e.style.display='none';
+  fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},
+                  body:JSON.stringify({key:document.getElementById('k').value})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d && d.ok){ location.href='/'; }
+      else { e.textContent = (d && d.error) || 'sign in failed'; e.style.display='block'; }
+    })
+    .catch(function(){ e.textContent='server unreachable'; e.style.display='block'; });
+});
+</script></body></html>`;
+}
+
+// TLS verilmisse HTTPS, yoksa HTTP. Uretimde onde bir ters vekil
+// sunucu (nginx/caddy) da aynisini yapar; bu secenek, vekil olmadan da
+// sifreli calisabilmek icin.
+const istekIsleyici = async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
 
   // Kimlik dogrulama her seyden ONCE. Korunan yollar /api/* ile
   // sinirli: sayfalar ve statik dosyalar acik kaliyor (bkz. RUNBOOK,
   // "bilinen kisitlar") cunku tarayici gezinmesi ozel baslik tasiyamaz.
+  // Oturum acma ucu: anahtari bir kez alip imzali cerez verir. Korumanin
+  // disinda tutulmali, aksi halde girmek icin zaten girmis olmak gerekirdi.
+  if (url.pathname === '/login' && API_KEYS.size > 0) {
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 10_000) req.destroy(); });
+      req.on('end', () => {
+        let anahtar = '';
+        try { anahtar = String(JSON.parse(body || '{}').key || ''); }
+        catch { anahtar = new URLSearchParams(body).get('key') || ''; }
+        const ad = AUTH.anahtariDogrula(API_KEYS, anahtar.trim());
+        if (!ad) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: 'invalid API key' }));
+          return;
+        }
+        const cerez = AUTH.cerezUret(ad, SESSION_SECRET);
+        // HttpOnly: JavaScript okuyamaz, XSS ile calinamaz.
+        // SameSite=Strict: baska sitelerden gelen isteklerde gonderilmez.
+        // Secure yalnizca TLS varken: HTTP'de verilirse tarayici cerezi
+        // hic saklamaz ve giris sessizce calismaz.
+        const bayraklar = ['HttpOnly', 'SameSite=Strict', 'Path=/',
+                           `Max-Age=${SESSION_TTL_SEC}`];
+        if (TLS_CERT) bayraklar.push('Secure');
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Set-Cookie': `${AUTH.COOKIE_AD}=${cerez}; ${bayraklar.join('; ')}`,
+        });
+        res.end(JSON.stringify({ ok: true, identity: ad }));
+      });
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(girisSayfasi());
+    return;
+  }
+
   const yetki = AUTH.kontrolEt(req, url.pathname, {
     anahtarlar: API_KEYS,
     yerelMuaf: AUTH_ALLOW_LOCAL,
+    sayfalariKoru: AUTH_PROTECT_PAGES,
+    cerezSir: SESSION_SECRET,
+    cerezOmurSn: SESSION_TTL_SEC,
     hizSiniri,
   });
   if (!yetki.izin) {
+    // Tarayici gezinmesinde JSON yerine giris sayfasina yonlendir:
+    // kullaniciya ham bir hata govdesi gostermek ise yaramaz.
+    const kabul = String(req.headers.accept || '');
+    if (yetki.durum === 401 && !url.pathname.startsWith('/api/') && kabul.includes('text/html')) {
+      res.writeHead(302, { Location: '/login' });
+      res.end();
+      return;
+    }
     const basliklar = { 'Content-Type': 'application/json; charset=utf-8' };
     if (yetki.durum === 401) basliklar['WWW-Authenticate'] = 'Bearer realm="derivex"';
     if (yetki.retryAfter) basliklar['Retry-After'] = String(yetki.retryAfter);
@@ -5604,6 +5711,7 @@ const server = http.createServer(async (req, res) => {
             kabul += 1;
           }
           serverState.lastPostAt.spot = new Date().toISOString();
+          wsYayinla('spot', payload.spots);
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: true, stored: kabul }));
           return;
@@ -5714,6 +5822,7 @@ const server = http.createServer(async (req, res) => {
         serverState.futuresRatesByTicker = normalized;
         serverState.futuresMeta = maturities;
         serverState.lastPostAt.futures = new Date().toISOString();
+        wsYayinla('futures', { tickers: Object.keys(normalized).length });
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: true, tickers: Object.keys(normalized).length }));
@@ -5804,6 +5913,7 @@ const server = http.createServer(async (req, res) => {
         });
 
         serverState.optionsChainByTicker[ticker] = normalized;
+        wsYayinla('options', { ticker, rows: normalized.length });
         // Alinma zamani kaydediliyor: arayuz fiyatlarin yasini gosterebilsin.
         // Kaynagin kendi ts'i yalnizca saat:dakika:saniye tasidigi icin
         // sunucunun gorme ani kullaniliyor — tarih bilgisi orada yok.
@@ -6007,6 +6117,7 @@ const server = http.createServer(async (req, res) => {
         }
         serverState.otherAssets = temiz;
         serverState.otherAssetsTs = new Date().toISOString();
+        wsYayinla('other', temiz);
         serverState.lastPostAt.other = serverState.otherAssetsTs;
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: true, underlyings: Object.keys(temiz).length }));
@@ -6268,13 +6379,143 @@ const server = http.createServer(async (req, res) => {
   const html = renderRoute(url, serverState);
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(html);
-});
+};
+
+// ---------------------------------------------------------------------------
+// WebSocket yayini
+//
+// Kurumsal tuketiciler veriyi HTTP ile YOKLAMAK zorundaydi. Burada
+// abone olan istemcilere guncellemeler itiliyor.
+//
+// Kimlik dogrulama el sikismasinda yapiliyor. Tarayici WebSocket'inde
+// ozel baslik gonderilemedigi icin anahtar sorgu parametresinden de
+// kabul ediliyor; bu bir odun ve RUNBOOK'ta yaziyor (sorgu dizeleri
+// erisim kayitlarina duser). Oturum cerezi de gecerli.
+// ---------------------------------------------------------------------------
+const WS = require('./ws.js');
+const wsIstemciler = new Set();
+
+function wsYayinla(konu, veri) {
+  if (!wsIstemciler.size) return;
+  const govde = JSON.stringify({ topic: konu, data: veri, ts: new Date().toISOString() });
+  for (const c of wsIstemciler) {
+    if (!c.konular.has(konu) && !c.konular.has('*')) continue;
+    try {
+      c.socket.write(WS.cerceveKodla(govde));
+    } catch {
+      wsIstemciler.delete(c);
+    }
+  }
+}
+
+function wsKur(srv) {
+  srv.on('upgrade', (req, socket) => {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    if (url.pathname !== '/ws') {
+      WS.reddet(socket, 400, 'unknown websocket path');
+      return;
+    }
+
+    const g = WS.yukseltmeGecerliMi(req);
+    if (!g.ok) { WS.reddet(socket, 400, g.sebep); return; }
+
+    // Yetki: baslik, cerez ya da ?key= (tarayici WS'i baslik gonderemez).
+    if (API_KEYS.size > 0) {
+      const yerel = AUTH.yerelMi(req) && AUTH_ALLOW_LOCAL;
+      let kimlik = yerel ? 'local' : null;
+      if (!kimlik) kimlik = AUTH.cerezDogrula(AUTH.istekCerezi(req), SESSION_SECRET, SESSION_TTL_SEC);
+      if (!kimlik) kimlik = AUTH.anahtariDogrula(API_KEYS, AUTH.istekAnahtari(req));
+      if (!kimlik) kimlik = AUTH.anahtariDogrula(API_KEYS, url.searchParams.get('key') || '');
+      if (!kimlik) { WS.reddet(socket, 401, 'missing or invalid API key'); return; }
+    }
+
+    const konular = new Set((url.searchParams.get('topics') || '*').split(',')
+      .map((s) => s.trim()).filter(Boolean));
+    socket.write(WS.elSikismaYaniti(g.anahtar));
+    socket.setNoDelay(true);
+
+    const istemci = { socket, konular, cozucu: new WS.CerceveCozucu() };
+    wsIstemciler.add(istemci);
+
+    const kapat = () => { wsIstemciler.delete(istemci); try { socket.destroy(); } catch {} };
+    socket.on('error', kapat);
+    socket.on('close', kapat);
+
+    socket.on('data', (parca) => {
+      const { cerceveler, hata } = istemci.cozucu.ekle(parca);
+      if (hata) {
+        // 1002 = protokol hatasi. Sessizce yok saymak yerine kapatiliyor:
+        // bozuk cerceve akisinda sonraki her sey de bozuk okunurdu.
+        try { socket.write(WS.kapanisCercevesi(1002, hata)); } catch {}
+        kapat();
+        return;
+      }
+      for (const f of cerceveler) {
+        if (f.opcode === WS.OPCODE.KAPAT) {
+          try { socket.write(WS.kapanisCercevesi(1000, '')); } catch {}
+          kapat();
+          return;
+        }
+        if (f.opcode === WS.OPCODE.PING) {
+          try { socket.write(WS.cerceveKodla(f.veri, WS.OPCODE.PONG)); } catch {}
+          continue;
+        }
+        if (f.opcode === WS.OPCODE.METIN) {
+          // Tek desteklenen komut: konu abonelikleri
+          try {
+            const m = JSON.parse(f.veri.toString('utf8'));
+            if (m && Array.isArray(m.subscribe)) {
+              istemci.konular = new Set(m.subscribe.map(String));
+              socket.write(WS.cerceveKodla(JSON.stringify({
+                topic: 'subscribed', data: [...istemci.konular],
+              })));
+            }
+          } catch { /* bicimsiz mesaj yok sayilir */ }
+        }
+      }
+    });
+
+    try {
+      socket.write(WS.cerceveKodla(JSON.stringify({
+        topic: 'welcome',
+        data: { topics: [...konular], mode: MOCK_MODE ? 'MOCK' : 'LIVE',
+                available: ['spot', 'futures', 'options', 'other', 'health'] },
+      })));
+    } catch { kapat(); }
+  });
+}
+
+let server;
+if (TLS_CERT && TLS_KEY) {
+  try {
+    server = require('https').createServer({
+      cert: fs.readFileSync(TLS_CERT),
+      key: fs.readFileSync(TLS_KEY),
+    }, istekIsleyici);
+  } catch (e) {
+    // Sessizce HTTP'ye dusmek tehlikeli olurdu: operator sifreli
+    // calistigini sanirken duz metin yayin yapardi.
+    console.error(`[TLS] sertifika okunamadi (${e.message}) — baslatilmiyor.`);
+    console.error('[TLS] TLS_CERT ve TLS_KEY yollarini kontrol edin, ya da');
+    console.error('[TLS] ikisini de bos birakip HTTP ile calistirin.');
+    process.exit(1);
+  }
+} else {
+  server = http.createServer(istekIsleyici);
+}
+
+wsKur(server);
 
 server.listen(process.env.PORT || 5173, process.env.HOST || '127.0.0.1', () => {
   const bindHost = process.env.HOST || '127.0.0.1';
   const port = process.env.PORT || 5173;
   const publicHost = process.env.PUBLIC_HOST || bindHost;
-  console.log(`Frontend shell ready: http://${publicHost}:${port} (bind ${bindHost})`);
+  const sema = (TLS_CERT && TLS_KEY) ? 'https' : 'http';
+  console.log(`Frontend shell ready: ${sema}://${publicHost}:${port} (bind ${bindHost})`);
+  if (API_KEYS.size > 0) {
+    console.log(`[AUTH] ${API_KEYS.size} key(s), pages ${AUTH_PROTECT_PAGES ? 'protected' : 'open'}`
+              + `, local ${AUTH_ALLOW_LOCAL ? 'exempt' : 'not exempt'}`);
+  }
 
   // Warm the realized-vol table right away instead of waiting for the
   // first /tools/realized-vols visit (which would otherwise pay the full
