@@ -45,7 +45,7 @@ jobs:
           python3 -m py_compile bridge_stream.py bridge_http.py mock_feed.py start.py \
                                idealdata_probe.py store.py garch.py yield_curve.py fit_curve.py \
                                bench_stream.py backtest.py correlation.py feed_schema.py \
-                               import_history.py
+                               import_history.py seed_demo_history.py
 
   docker:
     runs-on: ubuntu-latest

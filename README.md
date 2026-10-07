@@ -3,6 +3,9 @@
 BIST pay senetleri için vadeli işlem, opsiyon ve volatilite verilerini tek
 ekranda toplayan finansal türev platformu. IdealData canlı akışından beslenir.
 
+> **Yeni makinede sıfırdan çalıştıracaksanız:** [HOWTO.md](HOWTO.md) —
+> klonlamadan demo verisini doldurmaya kadar 5 dakikalık özet.
+
 ## Hızlı başlangıç
 
 ```bash
@@ -83,6 +86,7 @@ IdealData REST ─────────────────────�
 | `yield_curve.py` / `fit_curve.py` | Nelson-Siegel-Svensson eğri uydurma |
 | `feed_schema.py` | Ortak veri şeması ve kaynak adaptörleri (IdealData/FIX/CSV/XML/JSON) |
 | `import_history.py` | Tarihsel günlük fiyat aktarımı (CSV/JSON → `spot_daily`) |
+| `seed_demo_history.py` | Demo için üretilmiş geçmiş seri (boş ekranları doldurur) |
 | `k8s/` | Kubernetes manifestleri — bkz. [k8s/README.md](k8s/README.md) |
 
 ### Akış protokolü
