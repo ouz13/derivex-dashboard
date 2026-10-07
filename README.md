@@ -754,3 +754,34 @@ noktalar piyasa kotasyonları) ve ızgaranın kendisi ısı haritası olarak.
 
 **Yüzey otomatik kurulmaz.** Heston vade başına ~2,8 saniye sürüyor (ölçüldü);
 her sayfa açılışında bunu ödemek gereksiz. SVI ile neredeyse anlık.
+
+## Şube ekranı (prototip)
+
+`Branch` sekmesi şube iş akışının **şeklini** gösterir: teklif girişi, trading
+masasına iletme, rol bazlı onay. Sayfanın en üstünde kaldırılamaz bir uyarı
+var ve kasıtlı:
+
+> **Nothing is sent anywhere.** Teklifler bu sunucuda kalır, rol gerçek bir
+> giriş değil bir seçicidir.
+
+**Neden tam uygulanmadı:** iş akışı müşteriye özeldir — onay kuralları, roller,
+kimlik sağlayıcı ve hedef sistem her kurumda farklıdır. Üretim sürümü
+müşterinin kendi iş akışı motoruna karşı yazılır.
+
+**Gerçek olan kısım:** fiyatlama. Seçilen sözleşmenin piyasa orta fiyatı ve
+zımni volatilitesi canlı zincirden okunur. Tek taraflı kotasyonda fiyat
+**üretilmez**, "cannot price it" denir.
+
+**Gösterim olsa da durum makinesi gerçek:**
+
+```
+draft → submitted → approved
+                  ↘ rejected → (revise) → draft
+```
+
+Geçişler **sunucuda** zorlanır, arayüzde düğme gizlemekle yetinilmez. Şube
+kendi teklifini onaylamaya çalışırsa — doğrudan API çağrısıyla bile — `403`
+alır. Görev ayrılığı ilkesi budur ve testi var.
+
+Her geçiş aktör ve zaman damgasıyla ize yazılır. Üretimde bu iz, Risk
+sekmesinin zaten doğruladığı değiştirilemez denetim kaydına bağlanır.

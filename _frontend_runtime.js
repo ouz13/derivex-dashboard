@@ -162,6 +162,10 @@ const serverState = {
   // Akisin kendi ts'i yalnizca saat:dakika:saniye tasidigi icin yas
   // hesabina elverisli degil; saglik kontrolu bunu kullanir.
   lastPostAt: { spot: null, futures: null, options: null, other: null },
+  // Sube teklif akisi — GOSTERIM AMACLI.
+  // Gercek kurulumda teklifler musterinin kendi is akisi sistemine
+  // baglanir; buradaki kayitlar yalnizca akisi gostermek icindir.
+  teklifler: [],
   // Varliklar arasi korelasyon matrisi ve Cholesky carpani.
   // correlation.py hesaplar; risk simulasyonu bunu kullanir, yoksa
   // skaler rho'ya duser.
@@ -492,6 +496,7 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
     <div class="row">
       ${navPill('Market', '/market/futures', mainTab === 'market')}
       ${navPill('Tools', '/tools', mainTab === 'tools')}
+      ${navPill('Branch', '/branch', mainTab === 'branch')}
       ${mainTab === 'market' ? `<div class="group">${navPill('Options', '/market/options', marketTab === 'options')}${navPill('Warrants', '/market/warrants', marketTab === 'warrants')}${navPill('Futures', '/market/futures', marketTab === 'futures')}${navPill('Other Assets', '/market/other', marketTab === 'other')}${navPill('Summary', '/market/summary', marketTab === 'summary')}</div>` : ''}
       ${mainTab === 'tools' ? `<div class="tool-tabs">${navPill('Dividends', '/tools/dividends', toolsTab === 'dividends')}${navPill('Discount Rate', '/tools/discount', toolsTab === 'discount')}${navPill('Pricer', '/tools/pricer', toolsTab === 'pricer')}${navPill('Realized Vols', '/tools/realized-vols', toolsTab === 'realized-vols')}${navPill('Volatility Curve', '/tools/volatility-curve', toolsTab === 'volatility-curve')}${navPill('Risk', '/tools/risk', toolsTab === 'risk')}</div>` : ''}
     </div>
@@ -3078,6 +3083,203 @@ function appLayout({ mainTab, marketTab, toolsTab, contentHtml, breadcrumb }) {
       }).catch(function () { durum.textContent = 'unreachable'; });
     }
 
+    // --- Sube teklif akisi (GOSTERIM) ---
+    // Fiyatlama GERCEK: opsiyon zincirinden secilen sozlesmenin piyasa
+    // orta fiyati ve zimni volatilitesi kullaniliyor. Akis (durumlar,
+    // roller, onay) gosterim amacli.
+    if (document.getElementById('subeKart')) {
+      const rolEl = document.getElementById('subeRol');
+      const tickerEl = document.getElementById('qTicker');
+      const vadeEl = document.getElementById('qExpiry');
+      const strikeEl = document.getElementById('qStrike');
+      const tipEl = document.getElementById('qType');
+      const fiyatKutu = document.getElementById('qFiyatKutu');
+      const hataEl = document.getElementById('qHata');
+      const kaydetBtn = document.getElementById('qSaveBtn');
+      let zincir = [], seciliFiyat = null;
+
+      const hata = (m) => {
+        hataEl.textContent = m || '';
+        hataEl.style.display = m ? '' : 'none';
+      };
+
+      function tickerlariYukle() {
+        fetch('/api/options-chain?all=1').then((r) => r.json()).then((d) => {
+          const hepsi = Object.keys(d.options_by_ticker || {}).sort();
+          tickerEl.innerHTML = hepsi.map((t) => '<option>' + t + '</option>').join('');
+          if (hepsi.length) zinciriYukle();
+          else hata('No option chains yet — keep the data source running.');
+        }).catch(() => hata('Could not load instruments.'));
+      }
+
+      function zinciriYukle() {
+        fetch('/api/options-chain?ticker=' + encodeURIComponent(tickerEl.value))
+          .then((r) => r.json()).then((d) => {
+            zincir = d.options || [];
+            const vadeler = [...new Set(zincir.map((r) => r.expiry))].sort();
+            vadeEl.innerHTML = vadeler.map((v) => {
+              const dtm = (zincir.find((r) => r.expiry === v) || {}).dtm;
+              return '<option value="' + v + '">' + v + ' (' + dtm + 'd)</option>';
+            }).join('');
+            strikeleriYukle();
+          });
+      }
+
+      function strikeleriYukle() {
+        const ks = zincir.filter((r) => r.expiry === vadeEl.value)
+          .map((r) => r.strike).sort((a, b) => a - b);
+        strikeEl.innerHTML = ks.map((k) => '<option>' + k + '</option>').join('');
+        fiyatKutu.style.display = 'none';
+        kaydetBtn.disabled = true;
+        seciliFiyat = null;
+      }
+
+      tickerEl.addEventListener('change', zinciriYukle);
+      vadeEl.addEventListener('change', strikeleriYukle);
+      [strikeEl, tipEl].forEach((e) => e.addEventListener('change', () => {
+        fiyatKutu.style.display = 'none'; kaydetBtn.disabled = true; seciliFiyat = null;
+      }));
+
+      document.getElementById('qPriceBtn').addEventListener('click', () => {
+        hata('');
+        const satir = zincir.find((r) => r.expiry === vadeEl.value
+          && Number(r.strike) === Number(strikeEl.value));
+        if (!satir) { hata('Contract not found in the chain.'); return; }
+        const alis = tipEl.value === 'call' ? satir.call_bid_price : satir.put_bid_price;
+        const satis = tipEl.value === 'call' ? satir.call_ask_price : satir.put_ask_price;
+        const ivA = tipEl.value === 'call' ? satir.call_bid_iv : satir.put_bid_iv;
+        const ivS = tipEl.value === 'call' ? satir.call_ask_iv : satir.put_ask_iv;
+        if (!Number.isFinite(alis) || !Number.isFinite(satis)) {
+          // Tek tarafli kotasyonda orta fiyat uretilmiyor; uydurmak
+          // yerine soyleniyor.
+          hata('No two-sided quote for this contract — cannot price it.');
+          fiyatKutu.style.display = 'none'; kaydetBtn.disabled = true;
+          return;
+        }
+        const orta = (alis + satis) / 2;
+        const iv = (Number.isFinite(ivA) && Number.isFinite(ivS)) ? (ivA + ivS) / 2 : null;
+        const adet = Number(document.getElementById('qQty').value) || 0;
+        seciliFiyat = { price: orta, iv, spot: satir.spot_mid, dtm: satir.dtm };
+        fiyatKutu.innerHTML =
+          '<b>' + orta.toFixed(4) + '</b> per contract'
+          + ' &nbsp;·&nbsp; bid ' + alis.toFixed(4) + ' / ask ' + satis.toFixed(4)
+          + (iv !== null ? ' &nbsp;·&nbsp; IV ' + (iv * 100).toFixed(2) + '%' : '')
+          + ' &nbsp;·&nbsp; spot ' + Number(satir.spot_mid).toFixed(3)
+          + '<br><span style="color:#166534;">Notional at mid: '
+          + (orta * adet * 100).toLocaleString(undefined, { maximumFractionDigits: 2 })
+          + ' (contract multiplier 100)</span>';
+        fiyatKutu.style.display = '';
+        kaydetBtn.disabled = false;
+      });
+
+      kaydetBtn.addEventListener('click', () => {
+        if (!seciliFiyat) return;
+        fetch('/api/quotes', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            role: rolEl.value,
+            client: document.getElementById('qClient').value || 'Unnamed client',
+            ticker: tickerEl.value, optionType: tipEl.value,
+            expiry: vadeEl.value, strike: Number(strikeEl.value),
+            qty: Number(document.getElementById('qQty').value),
+            price: seciliFiyat.price, iv: seciliFiyat.iv,
+            spot: seciliFiyat.spot, dtm: seciliFiyat.dtm,
+          }),
+        }).then((r) => r.json()).then((d) => {
+          if (!d.ok) { hata(d.error || 'could not save'); return; }
+          fiyatKutu.style.display = 'none'; kaydetBtn.disabled = true;
+          teklifleriYukle();
+        }).catch(() => hata('Server unreachable.'));
+      });
+
+      function eylemler(t, rol) {
+        // Sunucudaki gecis tablosunun aynasi; sunucu yine de dogruluyor
+        // (istemciye guvenilmez), burasi yalnizca ne gosterilecegi.
+        const harita = {
+          draft: [['submit', 'Submit', 'branch'], ['cancel', 'Cancel', 'branch']],
+          submitted: [['approve', 'Approve', 'trading'], ['reject', 'Reject', 'trading'],
+                      ['withdraw', 'Withdraw', 'branch']],
+          rejected: [['revise', 'Revise', 'branch']],
+          approved: [], cancelled: [],
+        };
+        return (harita[t.status] || []).filter((e) => e[2] === rol);
+      }
+
+      function teklifleriYukle() {
+        fetch('/api/quotes').then((r) => r.json()).then((d) => {
+          const rol = rolEl.value;
+          const liste = d.quotes || [];
+          const say = {};
+          liste.forEach((t) => { say[t.status] = (say[t.status] || 0) + 1; });
+          document.getElementById('qOzet').textContent = liste.length + ' total'
+            + (Object.keys(say).length
+                ? ' · ' + Object.keys(say).sort().map((k) => say[k] + ' ' + k).join(', ')
+                : '');
+
+          const govde = document.getElementById('qSatirlar');
+          if (!liste.length) {
+            govde.innerHTML = '<tr><td colspan="8" style="padding:10px;color:#64748b;">'
+              + 'No quotes yet — price a contract above and save it as a draft.</td></tr>';
+            document.getElementById('qGecmis').innerHTML = '';
+            return;
+          }
+          govde.innerHTML = liste.map((t) => {
+            const son = t.history[t.history.length - 1] || {};
+            const renk = { draft: '#64748b', submitted: '#b45309', approved: '#15803d',
+                           rejected: '#dc2626', cancelled: '#94a3b8' }[t.status] || '#64748b';
+            const dugmeler = eylemler(t, rol).map((e) =>
+              '<button class="action-btn q-eylem" data-id="' + t.id + '" data-action="' + e[0]
+              + '" style="padding:2px 8px;font-size:11px;margin-right:4px;">' + e[1] + '</button>'
+            ).join('') || '<span style="color:#cbd5e1;font-size:11px;">—</span>';
+            return '<tr>'
+              + '<td style="font-family:monospace;font-size:11px;">' + t.id + '</td>'
+              + '<td>' + t.client + '</td>'
+              + '<td>' + t.ticker + ' ' + t.expiry + ' ' + t.strike + ' '
+              + t.optionType.toUpperCase() + '</td>'
+              + '<td>' + t.qty + '</td>'
+              + '<td>' + (t.price === null ? '—' : t.price.toFixed(4)) + '</td>'
+              + '<td style="color:' + renk + ';font-weight:700;">' + t.status + '</td>'
+              + '<td style="font-size:11px;color:#64748b;">' + (son.action || '—')
+              + ' · ' + String(son.by || '') + '</td>'
+              + '<td>' + dugmeler + '</td>'
+              + '</tr>';
+          }).join('');
+
+          // Son teklifin gecmisi: denetlenebilirligi gosteren kisim
+          const ilk = liste[0];
+          document.getElementById('qGecmis').innerHTML =
+            '<div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;'
+            + 'letter-spacing:.06em;margin-bottom:4px;">Trail — ' + ilk.id + '</div>'
+            + '<div style="font-size:11.5px;color:#475569;">'
+            + ilk.history.map((h) => String(h.at).replace('T', ' ').slice(0, 19)
+                + ' &nbsp;<b>' + h.action + '</b> by ' + h.by
+                + (h.note ? ' — ' + h.note : '')).join('<br>')
+            + '</div>'
+            + '<div style="font-size:11px;color:#94a3b8;margin-top:6px;">'
+            + 'In production this trail would be written to the immutable audit log '
+            + 'that the Risk tab already verifies.</div>';
+        }).catch(() => { /* sunucu kapaliysa sessiz gec */ });
+      }
+
+      document.addEventListener('click', (ev) => {
+        const b = ev.target.closest && ev.target.closest('.q-eylem');
+        if (!b) return;
+        fetch('/api/quotes/action', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: b.getAttribute('data-id'),
+                                 action: b.getAttribute('data-action'),
+                                 role: rolEl.value }),
+        }).then((r) => r.json()).then((d) => {
+          if (!d.ok) hata(d.error || 'action failed'); else hata('');
+          teklifleriYukle();
+        }).catch(() => hata('Server unreachable.'));
+      });
+
+      rolEl.addEventListener('change', teklifleriYukle);
+      tickerlariYukle();
+      teklifleriYukle();
+    }
+
     // Servis sagligi. Rozet her sayfada, ayrintili tablo Summary'de.
     // Ikisi ayni /health yanitini kullanir ki gosterilen durum ile
     // izleme sisteminin gordugu durum ayrisamasin.
@@ -4652,6 +4854,95 @@ function renderRoute(url, state) {
     });
   }
 
+  if (pathname === '/branch') {
+    return appLayout({
+      mainTab: 'branch',
+      marketTab: null,
+      toolsTab: null,
+      breadcrumb: 'Main: <b>BRANCH</b> - Quote workflow',
+      contentHtml: ''
+        // Prototip oldugu EN USTTE, gizlenemeyecek bicimde. Demoyu
+        // izleyen biri bunun gercekten trading masasina teklif
+        // ilettigini sanmamali.
+        + '<div style="background:#fdf6ec;border-left:4px solid #b45309;padding:12px 16px;'
+        + 'border-radius:4px;margin-bottom:16px;">'
+        +   '<div style="font-weight:700;color:#92400e;font-size:13px;margin-bottom:4px;">'
+        +     'PROTOTYPE &mdash; demonstration only</div>'
+        +   '<div style="font-size:12.5px;color:#78350f;line-height:1.5;">'
+        +     'This screen shows the <b>shape</b> of the branch workflow: quote entry, '
+        +     'submission to the trading desk, and role-based approval. '
+        +     '<b>Nothing is sent anywhere.</b> Quotes stay on this server and the role is a '
+        +     'selector, not a real login. The production version is built against the '
+        +     'customer&rsquo;s own workflow engine, identity provider and approval rules.'
+        +   '</div>'
+        + '</div>'
+
+        + '<div class="card" id="subeKart">'
+        + '<div class="card-head"><div>'
+        + '<h2 class="section-title">Quote Workflow</h2>'
+        + '<p class="rv-top-note">Pricing below uses the real engine and live chain data. '
+        + 'The workflow around it is the demonstration.</p>'
+        + '</div>'
+        + '<div style="display:flex;align-items:center;gap:8px;">'
+        +   '<label for="subeRol" style="font-size:12px;color:#475569;">Acting as</label>'
+        +   '<select id="subeRol" class="rv-select">'
+        +     '<option value="branch">Branch staff</option>'
+        +     '<option value="trading">Trading desk</option>'
+        +   '</select>'
+        + '</div></div>'
+
+        // --- akis diyagrami ---
+        + '<div style="margin:4px 0 16px;display:flex;align-items:center;gap:6px;'
+        + 'flex-wrap:wrap;font-size:11px;">'
+        +   _akisAdim('draft', 'Draft') + _akisOk()
+        +   _akisAdim('submitted', 'Submitted') + _akisOk()
+        +   _akisAdim('approved', 'Approved')
+        +   '<span style="color:#94a3b8;margin:0 6px;">or</span>'
+        +   _akisAdim('rejected', 'Rejected')
+        + '</div>'
+
+        // --- yeni teklif ---
+        + '<div style="border:1px solid #e2e8f0;border-radius:6px;padding:12px 14px;margin-bottom:16px;">'
+        +   '<div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;'
+        +   'letter-spacing:.06em;margin-bottom:10px;">New quote request</div>'
+        +   '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">'
+        +     '<div><div class="field-label">Client</div>'
+        +       '<input class="field-input field-editable" id="qClient" placeholder="e.g. ACME A.S." style="width:150px;"></div>'
+        +     '<div><div class="field-label">Underlying</div>'
+        +       '<select class="field-input field-editable" id="qTicker" style="width:110px;"></select></div>'
+        +     '<div><div class="field-label">Type</div>'
+        +       '<select class="field-input field-editable" id="qType" style="width:80px;">'
+        +       '<option value="call">Call</option><option value="put">Put</option></select></div>'
+        +     '<div><div class="field-label">Expiry</div>'
+        +       '<select class="field-input field-editable" id="qExpiry" style="width:110px;"></select></div>'
+        +     '<div><div class="field-label">Strike</div>'
+        +       '<select class="field-input field-editable" id="qStrike" style="width:100px;"></select></div>'
+        +     '<div><div class="field-label">Quantity</div>'
+        +       '<input class="field-input field-editable" id="qQty" type="number" value="100" step="1" style="width:90px;"></div>'
+        +     '<button class="action-btn" type="button" id="qPriceBtn">Price it</button>'
+        +     '<button class="action-btn" type="button" id="qSaveBtn" disabled>Save as draft</button>'
+        +   '</div>'
+        +   '<div id="qFiyatKutu" style="display:none;margin-top:12px;padding:10px 12px;'
+        +   'background:#f0fdf4;border:1px solid #bbf7d0;border-radius:5px;font-size:13px;">'
+        +   '</div>'
+        +   '<div id="qHata" style="display:none;margin-top:10px;font-size:12px;color:#dc2626;"></div>'
+        + '</div>'
+
+        // --- teklif listesi ---
+        + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">'
+        +   '<span style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;'
+        +   'letter-spacing:.06em;">Quotes</span>'
+        +   '<span id="qOzet" style="font-size:12px;color:#64748b;"></span>'
+        + '</div>'
+        + '<div class="table-wrap"><table class="rv-table"><thead><tr>'
+        + '<th>ID</th><th>Client</th><th>Instrument</th><th>Qty</th><th>Price</th>'
+        + '<th>Status</th><th>Last action</th><th>Actions</th>'
+        + '</tr></thead><tbody id="qSatirlar"></tbody></table></div>'
+        + '<div id="qGecmis" style="margin-top:14px;"></div>'
+        + '</div>',
+    });
+  }
+
   if (pathname === '/market/other') {
     return appLayout({
       mainTab: 'market',
@@ -5121,6 +5412,55 @@ async function getRealizedVolTable(forceRefresh = false) {
 }
 
 const xlsxBundlePath = path.join(__dirname, 'node_modules', 'xlsx', 'dist', 'xlsx.full.min.js');
+
+// Teklif durum makinesi. Gecisler ROLE bagli: subenin kendi teklifini
+// onaylamasi gorev ayriligi ilkesini bozardi, bu yuzden onay/red
+// yalnizca trading rolunde. Gercek kurulumda bu kurallar musterinin
+// is akisi motorundan (BPMN vb.) gelir; burada akisin kendisini
+// gosterebilmek icin sabit.
+const TEKLIF_GECISLERI = {
+  draft: {
+    submit: { rol: 'branch', yeni: 'submitted' },
+    cancel: { rol: 'branch', yeni: 'cancelled' },
+  },
+  submitted: {
+    approve: { rol: 'trading', yeni: 'approved' },
+    reject: { rol: 'trading', yeni: 'rejected' },
+    withdraw: { rol: 'branch', yeni: 'draft' },
+  },
+  rejected: {
+    revise: { rol: 'branch', yeni: 'draft' },
+  },
+  approved: {},
+  cancelled: {},
+};
+
+const QUOTES_FILE = path.join(__dirname, 'quotes_demo.json');
+function teklifleriYaz() {
+  try {
+    fs.writeFileSync(QUOTES_FILE, JSON.stringify(serverState.teklifler, null, 2), 'utf8');
+  } catch (_) {}
+}
+try {
+  if (fs.existsSync(QUOTES_FILE)) {
+    const y = JSON.parse(fs.readFileSync(QUOTES_FILE, 'utf8'));
+    if (Array.isArray(y)) serverState.teklifler = y;
+  }
+} catch (_) {}
+
+// Akis diyagrami parcalari — durum makinesinin gorsel karsiligi.
+const TEKLIF_RENK = {
+  draft: '#64748b', submitted: '#b45309', approved: '#15803d',
+  rejected: '#dc2626', cancelled: '#94a3b8',
+};
+function _akisAdim(durum, etiket) {
+  const c = TEKLIF_RENK[durum] || '#64748b';
+  return '<span style="border:1.5px solid ' + c + ';color:' + c
+       + ';border-radius:999px;padding:3px 11px;font-weight:600;">' + etiket + '</span>';
+}
+function _akisOk() {
+  return '<span style="color:#cbd5e1;">&rarr;</span>';
+}
 
 function girisSayfasi() {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -6320,6 +6660,109 @@ const istekIsleyici = async (req, res) => {
         serverState.yieldCurve = { ...p, ts: new Date().toISOString() };
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: true, points: (p.curve || []).length }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
+      }
+    });
+    return;
+  }
+
+  // --- Sube teklif akisi (GOSTERIM) ---
+  //
+  // Durum makinesi: taslak -> iletildi -> onaylandi | reddedildi
+  // Gecisler ROLE gore kisitli: subenin kendi teklifini onaylamasi,
+  // gorev ayriligi ilkesini bozardi. Gercek kurulumda roller musterinin
+  // kimlik saglayicisindan gelir; burada secici bir gosterim araci.
+  if (url.pathname === '/api/quotes' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: true, demo: true, quotes: serverState.teklifler }));
+    return;
+  }
+
+  if (url.pathname === '/api/quotes' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 200_000) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const p = JSON.parse(body || '{}');
+        // null, undefined, '' ve [] hepsi Number() ile 0 olur. Strike'i
+        // olmayan bir teklifi strike=0 diye kaydetmek sessiz veri
+        // bozulmasidir. (Ayni tuzak /api/spot toplu bicimde de vardi.)
+        const sayi = (v) => {
+          if (typeof v !== 'number'
+              && !(typeof v === 'string' && v.trim() !== '')) return null;
+          const n = Number(v);
+          return Number.isFinite(n) ? n : null;
+        };
+        const t = {
+          id: 'Q' + String(Date.now()).slice(-8),
+          ticker: String(p.ticker || '').toUpperCase(),
+          optionType: p.optionType === 'put' ? 'put' : 'call',
+          strike: sayi(p.strike),
+          expiry: String(p.expiry || ''),
+          dtm: sayi(p.dtm),
+          qty: sayi(p.qty),
+          client: String(p.client || '').slice(0, 60),
+          price: sayi(p.price),
+          iv: sayi(p.iv),
+          spot: sayi(p.spot),
+          status: 'draft',
+          createdBy: String(p.role || 'branch'),
+          createdAt: new Date().toISOString(),
+          history: [{ at: new Date().toISOString(), by: String(p.role || 'branch'),
+                      action: 'created', note: '' }],
+        };
+        if (!t.ticker || t.strike === null || t.qty === null) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: 'ticker, strike and qty are required' }));
+          return;
+        }
+        serverState.teklifler.unshift(t);
+        if (serverState.teklifler.length > 100) serverState.teklifler.length = 100;
+        teklifleriYaz();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, quote: t }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/quotes/action' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 50_000) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const p = JSON.parse(body || '{}');
+        const t = serverState.teklifler.find((x) => x.id === String(p.id || ''));
+        if (!t) {
+          res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: 'quote not found' }));
+          return;
+        }
+        const rol = p.role === 'trading' ? 'trading' : 'branch';
+        const eylem = String(p.action || '');
+        const izinli = TEKLIF_GECISLERI[t.status] || {};
+        const kural = izinli[eylem];
+        if (!kural) {
+          res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: `cannot ${eylem} a quote in state ${t.status}` }));
+          return;
+        }
+        if (kural.rol !== rol) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: `${eylem} requires the ${kural.rol} role` }));
+          return;
+        }
+        t.status = kural.yeni;
+        t.history.push({ at: new Date().toISOString(), by: rol, action: eylem,
+                         note: String(p.note || '').slice(0, 200) });
+        teklifleriYaz();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, quote: t }));
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: false, error: 'invalid json' }));

@@ -32,3 +32,4 @@ health_alerts.jsonl
 # Gelistirme sertifikasi (node auth.js --cert)
 dev-cert.pem
 dev-key.pem
+quotes_demo.json
