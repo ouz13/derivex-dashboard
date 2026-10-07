@@ -360,6 +360,94 @@ class Store:
 
         return self._yaz(islem)
 
+    # -- tarihsel aktarim -------------------------------------------------
+
+    def gunluk_barlari_aktar(self, satirlar, uzerine_yaz=False):
+        """
+        Gunluk barlari TOPLU yazar — tarihsel veri aktarimi icin.
+
+        satirlar: [(gun, ticker, open, high, low, close)]  gun = 'YYYY-MM-DD'
+
+        spot_kaydet'ten iki yonden ayrilir:
+
+          * ON CONFLICT ile n'i ARTIRMAZ. Aktarilan bar gun ici tick'ten
+            olusmadi; n=0 ile isaretlenir ki hangi barin olculdugu,
+            hangisinin aktarildigi sonradan ayirt edilebilsin.
+          * Mevcut TICK'TEN olusmus bir bari (n > 0) varsayilan olarak
+            EZMEZ. Gun ici biriken gercek gozlemi bir dosyadan gelen tek
+            satirla degistirmek veri kaybidir; bunu istemek acik bir
+            karar olmali (uzerine_yaz).
+
+        Yeniden calistirmak guvenlidir: aktarilan barlarin n'i 0 oldugu
+        icin ikinci calistirma onlari serbestce yeniler, yani aktarim
+        idempotenttir.
+
+        doner: {"yazilan": n, "korunan": n, "korunan_ornekler": [...]}
+        """
+        kayitlar = [s for s in (satirlar or []) if s]
+        if not kayitlar:
+            return {"yazilan": 0, "korunan": 0, "korunan_ornekler": []}
+
+        korunan = []
+        if not uzerine_yaz:
+            # Tick'ten olusmus barlari onceden tespit et. Tek tek sorgu
+            # yerine ilgili tickerlarin tamami bir kerede okunur.
+            tickerlar = sorted({str(s[1]).upper() for s in kayitlar})
+            mevcut = set()
+            for i in range(0, len(tickerlar), 500):
+                dilim = tickerlar[i:i + 500]
+                yer = ",".join("?" * len(dilim))
+                for r in self.conn.execute(
+                        f"SELECT ticker, d FROM spot_daily WHERE data_mode = ? "
+                        f"AND n > 0 AND ticker IN ({yer})",
+                        (self.data_mode, *dilim)):
+                    mevcut.add((r["ticker"], r["d"]))
+            if mevcut:
+                suzulmus = []
+                for s in kayitlar:
+                    anahtar = (str(s[1]).upper(), s[0])
+                    if anahtar in mevcut:
+                        korunan.append(anahtar)
+                    else:
+                        suzulmus.append(s)
+                kayitlar = suzulmus
+
+        if not kayitlar:
+            return {"yazilan": 0, "korunan": len(korunan),
+                    "korunan_ornekler": korunan[:5]}
+
+        hazir = [(s[0], str(s[1]).upper(), float(s[2]), float(s[3]),
+                  float(s[4]), float(s[5]), self.data_mode) for s in kayitlar]
+
+        def islem():
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO spot_daily "
+                "(d, ticker, open, high, low, close, n, data_mode) "
+                "VALUES (?, ?, ?, ?, ?, ?, 0, ?)", hazir)
+
+        tamam = self._yaz(islem)
+        return {"yazilan": len(hazir) if tamam else 0,
+                "korunan": len(korunan), "korunan_ornekler": korunan[:5],
+                "hata": self.yazma_hatasi if not tamam else None}
+
+    def gunluk_ozet(self, data_mode=None):
+        """Ticker basina gun sayisi ve tarih araligi — aktarim raporu icin."""
+        mod = data_mode or self.data_mode
+        satirlar = self.conn.execute(
+            "SELECT ticker, COUNT(*) AS gun, MIN(d) AS ilk, MAX(d) AS son, "
+            "       SUM(CASE WHEN n = 0 THEN 1 ELSE 0 END) AS aktarilan "
+            "FROM spot_daily WHERE data_mode = ? GROUP BY ticker ORDER BY ticker",
+            (mod,)).fetchall()
+        return [{"ticker": s["ticker"], "days": s["gun"], "first": s["ilk"],
+                 "last": s["son"], "imported": s["aktarilan"]} for s in satirlar]
+
+    def gunler(self, ticker, data_mode=None):
+        """Bir ticker icin kayitli gunler (bosluk raporu icin)."""
+        mod = data_mode or self.data_mode
+        return [r["d"] for r in self.conn.execute(
+            "SELECT d FROM spot_daily WHERE ticker = ? AND data_mode = ? "
+            "ORDER BY d", (str(ticker).upper(), mod))]
+
     # -- anlik goruntu ----------------------------------------------------
 
     def snapshot_yaz(self, anahtar, veri):
