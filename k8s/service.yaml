@@ -1,0 +1,30 @@
+# ClusterIP — kume ici erisim.
+#
+# Disa acmak icin uc secenek var ve karari kume sahibi vermeli:
+#
+#   1. Ingress (onerilen): TLS'i Ingress bitirir, pod'un kendisi
+#      sertifika tasimaz. ingress.yaml'da ornek var.
+#   2. kubectl port-forward: gelistirme ve teshis icin, kalici degil.
+#      kubectl -n derivex port-forward svc/derivex-dashboard 5173:80
+#   3. type: LoadBalancer: bulut saglayicida dogrudan IP alir ama
+#      TLS'i ve kimlik dogrulamayi tamamen uygulamaya birakir.
+#
+# NOT: Pano ve API ayni portta. API_KEYS bos birakilirsa kimlik
+# dogrulama kapali olur; Service'i disa acmadan once Secret'in dolu
+# oldugunu dogrulayin.
+apiVersion: v1
+kind: Service
+metadata:
+  name: derivex-dashboard
+  namespace: derivex
+  labels:
+    app.kubernetes.io/name: derivex-dashboard
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: derivex-dashboard
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

@@ -1,0 +1,50 @@
+# Sir OLMAYAN yapilandirma.
+#
+# Kimlik bilgileri burada DEGIL: STREAM_USERNAME/PASSWORD, API_KEYS ve
+# SESSION_SECRET Secret'a gider (secret.example.yaml). ConfigMap kume
+# genelinde okunabilir sayilmali.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: derivex-config
+  namespace: derivex
+data:
+  # Konteyner disindan erisilebilmesi icin tum arayuzler.
+  HOST: "0.0.0.0"
+  PORT: "5173"
+
+  # 0 = mock veri, 1 = canli IdealData akisi.
+  #
+  # VARSAYILAN MOCK. Canliya alinmadan once iki sart var:
+  #   1. Podun disa cikis IP'si IdealData'da tanimli olmali. Kubernetes'te
+  #      bu NAT/cikis adresi dugume ya da bulut saglayicinin NAT gecidine
+  #      bagli ve pod yeniden zamanlandiginda DEGISEBILIR. Sabit bir
+  #      cikis IP'si (NAT gateway / egress IP) olmadan canli mod
+  #      guvenilmez calisir — bu bir kod sorunu degil, aglandirma sarti.
+  #   2. Secret'taki kimlik bilgileri dolu olmali.
+  DATA_MODE: "0"
+
+  # Kalici durum dizini. Birimle ayni yol olmali (deployment.yaml).
+  # Bos birakilirsa dosyalar /app'e, yani katman dosya sistemine yazilir
+  # ve pod yeniden basladiginda denetim izi dahil hepsi kaybolur.
+  STATE_DIR: "/data"
+  STORE_DB: "/data/derivex.db"
+
+  PYTHONUNBUFFERED: "1"
+
+  # Kimlik dogrulama. API_KEYS Secret'tan geliyor; burada yalnizca
+  # davranis anahtarlari.
+  #
+  # AUTH_ALLOW_LOCAL=0: kume icinden gelen istekler de anahtar ister.
+  # Podun kendi ag alani "yerel" sayildigi icin bunu 1 birakmak, ayni
+  # namespace'teki her pod'a anahtarsiz erisim vermek olurdu.
+  AUTH_ALLOW_LOCAL: "0"
+  AUTH_PROTECT_PAGES: "1"
+  RATE_LIMIT_RPM: "600"
+  SESSION_TTL_SEC: "43200"
+
+  # Depo ornekleme araliklari (saniye) — disk hacmini bunlar belirliyor.
+  # Buyutmek hacmi dusurur, cozunurlugu da.
+  STORE_SPOT_SAMPLE_SEC: "5"
+  STORE_RATE_SAMPLE_SEC: "30"
+  STORE_OPT_SAMPLE_SEC: "300"

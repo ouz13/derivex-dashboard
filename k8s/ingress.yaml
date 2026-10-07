@@ -1,0 +1,34 @@
+# ORNEK Ingress — alan adi ve sinif kumeye gore degisir.
+#
+# WebSocket (ws.js, /ws ucu) icin Ingress'in yukseltme basliklarini
+# gecirmesi gerekiyor. nginx-ingress bunu varsayilan olarak yapar ama
+# proxy zaman asimi 60 sn: uzun yasayan baglanti o surede kesilir ve
+# istemci surekli yeniden baglanir. Asagidaki anotasyon bunu 1 saate
+# cikariyor. Bu, kumede bir kez daha yasanmasin diye yazildi.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: derivex-dashboard
+  namespace: derivex
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Risk sekmesindeki XLSX portfoy ice aktarimi icin govde siniri.
+    nginx.ingress.kubernetes.io/proxy-body-size: "16m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - derivex.ornek.local
+      secretName: derivex-tls
+  rules:
+    - host: derivex.ornek.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: derivex-dashboard
+                port:
+                  name: http

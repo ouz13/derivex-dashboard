@@ -1,0 +1,41 @@
+# Kalici disk.
+#
+# SQLite dosya tabanli, yani disk olmadan kalicilik iddiasinin hicbir
+# anlami yok: pod yeniden basladiginda tum gecmis seri, model surumleri
+# ve denetim izi silinir.
+#
+# accessModes ReadWriteOnce: birim TEK bir dugume baglanir. Bu bir
+# eksiklik degil, SQLite'in dogal sonucu — ayni dosyaya iki podun
+# yazmasi zaten istenmiyor (bkz. deployment.yaml).
+#
+# BOYUT NEREDEN GELIYOR
+# Olculen: gelistirme veritabani 658 bin tick satirinda 129 MB, yani
+# satir basina ~196 bayt (store.py --stats).
+# Turetilen gunluk hacim, ornekleme araliklarindan (store.py) ve 8
+# saatlik seansla 26 ticker varsayimiyla:
+#     spot     26 tck /  5 sn  -> 150k satir
+#     vadeli   78 sz  / 30 sn  ->  75k satir
+#     opsiyon ~700 sz /300 sn  ->  67k satir
+#     toplam  ~292k satir/gun  -> ~57 MB/gun
+# 10 GB yaklasik ALTI AY eder. Bu bir tahmin: gercek hacim ticker
+# sayisina ve zincir genisligine gore degisir, ilk ayin sonunda
+# store.py --stats ile dogrulanmali.
+#
+# Tarihsel aktarim (import_history.py) yalnizca gunluk bar yazar ve
+# ihmal edilebilir: 10 yil x 30 ticker ~ 75 bin satir, ~15 MB.
+#
+# store.py --prune ile tick tablolari budanabilir; gunluk barlar ve
+# model surumleri korunur (RUNBOOK.md).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: derivex-data
+  namespace: derivex
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # storageClassName kasten bos: kumenin varsayilani kullanilir.
+  # Belirli bir sinif gerekiyorsa burada verilir.

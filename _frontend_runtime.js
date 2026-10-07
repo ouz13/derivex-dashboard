@@ -127,12 +127,29 @@ const TLS_KEY = process.env.TLS_KEY || '';
 const hizSiniri = new AUTH.HizSiniri(RATE_LIMIT_RPM);
 // Kayan pencere listeleri bellekte birikmesin
 setInterval(() => hizSiniri.temizle(), 60000).unref?.();
-const ALERTS_FILE = path.join(__dirname, 'health_alerts.jsonl');
+// Kalici durum dosyalarinin dizini.
+//
+// Varsayilani __dirname, yani kodun yanina yaziliyor. Konteynerde bu
+// /app oluyor ve /app katman dosya sistemi: pod yeniden basladiginda
+// denetim izi, uyari gecmisi, model parametreleri ve teklifler SILINIR.
+// Denetim izi hash zinciriyle degistirilemez olmasina ragmen boylece
+// kaybolabiliyordu — kalicilik iddiasi disk olmadan bir sey ifade etmez.
+// STATE_DIR bir birime isaret ettiginde dordu de o birimde durur.
+const STATE_DIR = process.env.STATE_DIR || __dirname;
+if (process.env.STATE_DIR) {
+  // Dizin yoksa her yazim sessizce basarisiz olurdu (yazim yollari
+  // istisnayi yutuyor, akis surmeli diye). Baslangicta bir kez kurulur.
+  try { fs.mkdirSync(STATE_DIR, { recursive: true }); } catch (e) {
+    console.error('[state] STATE_DIR olusturulamadi:', STATE_DIR, e.message);
+  }
+}
+
+const ALERTS_FILE = path.join(STATE_DIR, 'health_alerts.jsonl');
 const ALERTS_MAX = 200;
 
 // Degistirilemez denetim izi: fiyatlama ve risk koşuları zincirlenmiş
 // kayıtlara yazılır, geçmişe müdahale doğrulamada yakalanır.
-const auditTrail = new AuditTrail(path.join(__dirname, 'audit-log.jsonl'));
+const auditTrail = new AuditTrail(path.join(STATE_DIR, 'audit-log.jsonl'));
 
 const serverState = {
   spotByTicker: {},
@@ -234,14 +251,21 @@ function alarmYokla() {
   }
 }
 
-const DIVIDENDS_FILE = path.join(__dirname, 'dividends.json');
+// Temettuler hem repoda gelen bir tohum dosyasi hem de arayuzden
+// duzenlenebilen bir durum. Bu yuzden YAZIM durum dizinine, OKUMA ise
+// once durum dizinine sonra tohuma bakiyor: aksi halde STATE_DIR
+// verildiginde repodaki tohum hic okunmaz ve temettuler bos baslardi.
+const DIVIDENDS_FILE = path.join(STATE_DIR, 'dividends.json');
+const DIVIDENDS_SEED = path.join(__dirname, 'dividends.json');
 try {
-  if (fs.existsSync(DIVIDENDS_FILE)) {
-    serverState.dividendsByTicker = JSON.parse(fs.readFileSync(DIVIDENDS_FILE, 'utf8'));
+  const kaynak = fs.existsSync(DIVIDENDS_FILE) ? DIVIDENDS_FILE
+               : (fs.existsSync(DIVIDENDS_SEED) ? DIVIDENDS_SEED : null);
+  if (kaynak) {
+    serverState.dividendsByTicker = JSON.parse(fs.readFileSync(kaynak, 'utf8'));
   }
 } catch (_) {}
 
-const PRICER_LOG_FILE = path.join(__dirname, 'pricer_log.json');
+const PRICER_LOG_FILE = path.join(STATE_DIR, 'pricer_log.json');
 try {
   if (fs.existsSync(PRICER_LOG_FILE)) {
     serverState.pricerLog = JSON.parse(fs.readFileSync(PRICER_LOG_FILE, 'utf8'));
@@ -252,7 +276,7 @@ try {
 // Son iyi kalibrasyonlar diske yazilir: yeniden baslatmada "onceki
 // parametre setine donus" basamagi bos olmasin. Veri modu dosyaya
 // gomulur — mock veriden uydurulmus parametreler canli moda tasinmamali.
-const MODEL_PARAMS_FILE = path.join(__dirname, 'model_params.json');
+const MODEL_PARAMS_FILE = path.join(STATE_DIR, 'model_params.json');
 try {
   if (fs.existsSync(MODEL_PARAMS_FILE)) {
     const yuk = JSON.parse(fs.readFileSync(MODEL_PARAMS_FILE, 'utf8'));
@@ -5468,7 +5492,7 @@ const TEKLIF_GECISLERI = {
   cancelled: {},
 };
 
-const QUOTES_FILE = path.join(__dirname, 'quotes_demo.json');
+const QUOTES_FILE = path.join(STATE_DIR, 'quotes_demo.json');
 function teklifleriYaz() {
   try {
     fs.writeFileSync(QUOTES_FILE, JSON.stringify(serverState.teklifler, null, 2), 'utf8');
@@ -6292,9 +6316,22 @@ const istekIsleyici = async (req, res) => {
   // karar `status` alanina birakiliyor. Seans disinda veri akmamasi
   // normal bir "degraded" haldir ve konteyneri yeniden baslatmayi
   // gerektirmez.
+  //
+  // ?strict=1 ise HTTP durumu da karara katilir: unhealthy -> 503.
+  // JSON okuyamayan tuketiciler (yuk dengeleyici havuz kontrolu, harici
+  // izleme) icin. "degraded" yine 200 doner — seans disinda veri
+  // akmamasi normaldir.
+  //
+  // Kubernetes problari bunu KULLANMIYOR, kasten: readiness basarisiz
+  // olunca pod Service'ten cikarilir ve tek replika oldugu icin pano
+  // tamamen erisilemez hale gelir. Veri akmadigini TESHIS etmek icin
+  // panoya bakmak gerekiyor; onu kapatmak yardim degil zarar olurdu.
+  // Veri akisi alarmlari webhook yoluyla gidiyor, prob yoluyla degil.
   if (url.pathname === '/health') {
     const rapor = saglikRaporu();
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    const kati = url.searchParams.get('strict') === '1';
+    const kod = (kati && rapor.status === 'unhealthy') ? 503 : 200;
+    res.writeHead(kod, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ ok: rapor.status !== 'unhealthy', ...rapor }));
     return;
   }

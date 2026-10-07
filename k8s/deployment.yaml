@@ -1,0 +1,163 @@
+# Derivex Dashboard — Deployment
+#
+# ============================================================
+# REPLIKA SAYISI 1 VE BU BIR KISIT, AYAR DEGIL
+# ============================================================
+# Kalicilik SQLite dosyasi uzerinde ve birim ReadWriteOnce. Iki pod
+# ayni dosyaya yazamaz:
+#
+#   * SQLite yazar kilidini dosya sistemi kilitleriyle alir; ag
+#     dosya sistemlerinde bu kilitler guvenilir degil ve WAL kipinde
+#     bozulmaya kadar gidebiliyor.
+#   * Veri koprusu de her podda ayri calisirdi: ayni akis iki kez
+#     okunur, ayni satirlar iki kez yazilir.
+#   * Model kalibrasyonu ve tahmin kaydi da ikiye katlanir; forecast_log
+#     tablosundaki (ticker, model, horizon, made_on) tekilligi iki pod
+#     yarisirken hangisinin kazandigi belirsiz olur.
+#
+# Yatay olceklemek icin kalicilik katmaninin degismesi gerekir
+# (PostgreSQL) ve veri koprusunun tek bir yazara indirilmesi gerekir.
+# Bu bir YAML isi degil, mimari degisiklik. HPA kasten EKLENMEDI:
+# calismayan bir otomatik olcekleyici koymak, olceklendigi izlenimi
+# verip ilk yukte veriyi bozardi. Ayrintisi README.md'de.
+#
+# strategy: Recreate — RollingUpdate varsayilani guncelleme sirasinda
+# kisa bir sure IKI podu ayni anda ayakta tutar. Ikisi de ayni birime
+# yazmaya calisir; tam olarak kacinilmak istenen durum. Recreate once
+# eskiyi durdurur, sonra yenisini baslatir. Bedeli birkac saniye
+# kesinti, karsiligi veri butunlugu.
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: derivex-dashboard
+  namespace: derivex
+  labels:
+    app.kubernetes.io/name: derivex-dashboard
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: derivex-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: derivex-dashboard
+    spec:
+      securityContext:
+        # Imaj root ile calisiyor ve /app'e yaziyor. runAsNonRoot KASTEN
+        # ayarlanmadi: denenmemis bir deger koymak, ilk dagitimda
+        # aciklanamayan izin hatasi demek olurdu. Imajin root'suz hale
+        # getirilmesi ayri bir is (README.md "Bilinen eksikler").
+        fsGroup: 1000
+      containers:
+        - name: dashboard
+          image: derivex-dashboard:latest
+          # Kume icinde bir kayit defteri kullaniliyorsa tam ad
+          # yazilmali. latest etiketi IfNotPresent ile birlikte
+          # guncellemeyi sessizce atlayabilir; surumlu etiket yegdir.
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 5173
+
+          envFrom:
+            - configMapRef:
+                name: derivex-config
+            - secretRef:
+                name: derivex-secrets
+
+          volumeMounts:
+            - name: data
+              mountPath: /data
+
+          # ----------------------------------------------------------
+          # PROBLAR
+          #
+          # Ucu de /health'e bakiyor ve /health DAIMA 200 donuyor
+          # (?strict=1 haric). Bu bilincli:
+          #
+          #   * livenessProbe'un isi surecin ayakta ve yanit verebilir
+          #     olup olmadigini anlamak. Veri akmiyorsa surec saglikli
+          #     ama veri yok — yeniden baslatmak hicbir seyi duzeltmez,
+          #     yalnizca bellekteki durumu da siler.
+          #
+          #   * readinessProbe basarisiz olunca pod Service'ten
+          #     cikarilir. Tek replika oldugu icin bu, panoyu tamamen
+          #     erisilemez yapar. Oysa veri akmadigini TESHIS etmek icin
+          #     tam da panoya bakmak gerekiyor. Veri akisi alarmlari
+          #     webhook ile gidiyor (ALERT_WEBHOOK), prob ile degil.
+          #
+          # Yani problar "surec yasiyor mu" sorusunu cevapliyor,
+          # "veri geliyor mu" sorusunu cevaplamiyor. Ikincisi bir
+          # uygulama alarmi, bir yeniden baslatma sebebi degil.
+          # ----------------------------------------------------------
+          startupProbe:
+            # start.py once Node sunucusunu, sonra veri kopruyu
+            # baslatiyor; ilk yanit birkac saniye surebiliyor.
+            # failureThreshold x periodSeconds = 60 sn tolerans.
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 3
+            failureThreshold: 20
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # ----------------------------------------------------------
+          # KAYNAKLAR — olculmus degerlerden turetildi
+          #
+          # Olculen (yerel, mock mod, 26 ticker, 3,5 saat calisma):
+          #     node _frontend_runtime.js   28 MB RSS
+          #     python mock_feed.py         22 MB RSS
+          #     python start.py              7 MB RSS
+          #     toplam                     ~57 MB
+          #
+          # Istek 128Mi: olculenin iki kati, dalgalanma payi.
+          # Sinir 512Mi: GARCH/EGARCH ve korelasyon matrisi tum seriyi
+          # bellege aliyor; 30 ticker x 10 yil gunluk bar hala kucuk
+          # ama Heston kalibrasyonu izgara aramasi yapiyor.
+          #
+          # CPU siniri 1 cekirdek: Heston kalibrasyonu olculen ~2,8 sn
+          # ve tek is parcacikli (SVI ~7 ms). Daha fazla cekirdek
+          # vermek hizlandirmaz, paralellik yok.
+          # ----------------------------------------------------------
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # readOnlyRootFilesystem: true YAPILAMIYOR.
+            # Uygulama durum dosyalarini STATE_DIR'e yaziyor (burada
+            # /data, birim uzerinde) ama npm'in xlsx paketi ve Python
+            # __pycache__ /app altinda. Kok dosya sistemini salt okunur
+            # yapmak icin once bunlarin ayrilmasi gerek.
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: derivex-data

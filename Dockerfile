@@ -34,6 +34,21 @@ RUN npm install --omit=dev
 COPY . .
 
 # Konteyner disindan erisilebilmesi icin 127.0.0.1 yerine tum arayuzler.
+#
+# STATE_DIR ve STORE_DB KASTEN AYARLANMADI. Verilmediginde durum
+# dosyalari kodun yanina (/app) yazilir ve bu, katman dosya sistemi
+# oldugu icin konteyner silindiginde kaybolur: veritabani, hash zincirli
+# denetim izi, uyari gecmisi, model parametreleri, teklifler.
+#
+# Kalicilik istendiginde bir birim baglanip ikisi birlikte verilir:
+#
+#   docker run -v derivex-data:/data \
+#     -e STATE_DIR=/data -e STORE_DB=/data/derivex.db ... derivex-dashboard
+#
+# Kubernetes'te bunu ConfigMap yapiyor (k8s/configmap.yaml). Varsayilan
+# olarak /data'ya yazmamanin sebebi, birim baglanmadiginda durumun
+# yerinin degismemesi: boyle bir degisiklik mevcut `docker run`
+# kullanicilarinin dosyalarini sessizce baska bir yere tasirdi.
 ENV HOST=0.0.0.0 \
     PORT=5173 \
     DATA_MODE=0 \

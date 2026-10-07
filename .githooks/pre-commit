@@ -42,8 +42,15 @@ DESENLER = [
      re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----')),
 ]
 
-# Sablon/ornek dosyalarda bos deger normaldir, onlari atla
-MUAF = re.compile(r"\.env\.example$|\.githooks/|(^|/)KURULUM\.md$|(^|/)README\.md$")
+# Sablon/ornek dosyalarda bos deger normaldir, onlari atla.
+#
+# k8s/secret.example.yaml .env.example ile AYNI kategoridir: degerleri
+# bos olan bir sablon. Muafiyet dar tutuldu — "*.example.yaml" gibi
+# genel bir desen, ileride baska bir ornek dosyaya yapistirilan gercek
+# bir sirri de kacirirdi. Bu dosyanin gercekten bos oldugu ayrica
+# testle korunuyor (tests/test_k8s_manifests.py).
+MUAF = re.compile(r"\.env\.example$|\.githooks/|(^|/)KURULUM\.md$|(^|/)README\.md$"
+                  r"|^k8s/secret\.example\.yaml$")
 
 # Bilerek repoya konmus IdealData test hesabi bilgileri.
 # Proje sahibinin karari: kodu alan kisi hicbir ayar yapmasin diye gomulu.

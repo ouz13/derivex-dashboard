@@ -33,3 +33,7 @@ health_alerts.jsonl
 dev-cert.pem
 dev-key.pem
 quotes_demo.json
+
+# Doldurulmus Kubernetes sirlari. k8s/secret.example.yaml ornektir ve
+# repoda durur; doldurulmus hali asla girmemeli.
+k8s/secret.yaml

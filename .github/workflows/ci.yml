@@ -20,7 +20,10 @@ jobs:
           python-version: '3.12'
 
       - name: Python bagimliliklari
-        run: pip install requests
+        # pyyaml yalnizca TEST icin: k8s manifestlerinin capraz
+        # referanslarini dogrulayan test onu kullaniyor. Calisma
+        # zamani bagimliligi degil.
+        run: pip install requests pyyaml
 
       - name: Node testleri
         # Glob tirnaksiz: Node 20'nin --test bayragi glob desteklemiyor,
